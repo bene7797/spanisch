@@ -768,6 +768,17 @@ a { color: inherit; }
   padding: 7px 12px;
   font-size: 12px;
 }
+.tool-btn.rec-on {
+  background: var(--bad);
+  color: #fffaf3;
+}
+.listen-note {
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--terracotta-deep);
+  margin: 4px 0 8px;
+}
 
 @media (min-width: 900px) {
   body {

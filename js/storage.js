@@ -9,6 +9,7 @@ function defaultStore() {
     sessionSize: 12,
     direction: "es-de",
     reminders: false,
+    speechOn: false,
     quotaDoneOn: null,
     lastNotifyDate: null,
     reviewed: 0,

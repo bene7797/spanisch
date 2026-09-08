@@ -235,3 +235,21 @@ function scoreTyped(input, item) {
   }
   return { quality: 0, note: "Richtig: " + expected };
 }
+
+function scoreSpoken(heard, item) {
+  const expected = expectedSpanish(item);
+  const a = foldText(heard);
+  const b = foldText(expected);
+  if (!a) return { ok: false, note: "Nichts erkannt." };
+  if (a === b) return { ok: true, note: "Klingt gut: " + expected };
+  if (a.includes(b) || b.includes(a)) return { ok: true, note: "Passt: " + expected };
+  const lemma = foldText(stripArticle(expected));
+  if (lemma && (a === lemma || a.includes(lemma) || lemma.includes(a))) {
+    return { ok: true, note: "Passt" + (item.pos === "n" ? " (Artikel merken: " + expected + ")" : ": " + expected) };
+  }
+  const wordsA = a.split(" ").filter(Boolean);
+  const wordsB = b.split(" ").filter(Boolean);
+  const hit = wordsB.filter((w) => w.length > 2 && wordsA.includes(w)).length;
+  if (wordsB.length && hit / wordsB.length >= 0.7) return { ok: true, note: "Fast: " + expected };
+  return { ok: false, note: "Gehört: „" + heard.trim() + "“ · Ziel: " + expected };
+}

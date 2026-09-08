@@ -13,7 +13,9 @@
     dialogLine: 0,
     dialogShowDe: false,
     toast: "",
-    formsLockUntil: 0
+    formsLockUntil: 0,
+    listenNote: "",
+    speechPhase: "idle"
   };
 
   let drag = null;
@@ -143,6 +145,7 @@
       showForms: false,
       typed: "",
       typeResult: null,
+      listenNote: "",
       options: shuffleOptions(queue[0])
     };
     ui.view = "study";
@@ -182,6 +185,8 @@
     if (!ui.session) return;
     ui.session.index += 1;
     if (ui.session.index >= ui.session.queue.length) {
+      PalabraSpeech.cancel();
+      ui.speechPhase = "idle";
       if (ui.session.mode === "daily") {
         store = completeQuota(store);
         persist();
@@ -197,6 +202,9 @@
     ui.session.showForms = false;
     ui.session.typed = "";
     ui.session.typeResult = null;
+    ui.session.listenNote = "";
+    ui.speechPhase = "idle";
+    PalabraSpeech.cancel();
     ui.session.options = shuffleOptions(currentItem());
     render();
   }
@@ -588,9 +596,11 @@
           <button class="icon-btn" data-act="abort">×</button>
           <span class="chip">${labels[s.mode] || "Runde"}</span>
           ${forms ? `<button class="tool-btn forms-open" data-act="toggle-forms">Alle Formen</button>` : ""}
+          ${store.speechOn && isCardItem(item) ? `<button class="tool-btn ${ui.speechPhase === "recording" ? "rec-on" : ""}" data-act="listen-say">${speechBtnLabel()}</button>` : ""}
           <span class="session-count">${s.index + 1} / ${s.queue.length}</span>
         </div>
         <div class="thin-progress"><span style="width:${pct}%"></span></div>
+        ${s.listenNote ? `<p class="listen-note">${esc(s.listenNote)}</p>` : ""}
         ${isCardItem(item) ? renderVocabCard(item) : renderChoice(item)}
       </div>
       ${s.showForms && forms ? renderFormsModal(forms) : ""}`;
@@ -670,10 +680,16 @@
               ${[8, 12, 16, 24].map((n) => `<option ${store.sessionSize === n ? "selected" : ""}>${n}</option>`).join("")}
             </select>
           </label>
+          <label class="setting">Nachsprechen
+            <select class="select" data-act="speech">
+              <option value="0" ${store.speechOn ? "" : "selected"}>Aus</option>
+              <option value="1" ${store.speechOn ? "selected" : ""}>An (Whisper)</option>
+            </select>
+          </label>
         </div>
         <button class="btn ${store.reminders ? "btn-primary" : "btn-ghost"}" data-act="reminders" style="margin-bottom:12px">${store.reminders ? "Erinnerungen an" : "Erinnerungen einschalten"}</button>
         ${ui.toast ? `<p class="muted small" style="margin-bottom:12px">${esc(ui.toast)}</p>` : ""}
-        <p class="muted small" style="margin-bottom:12px">Erinnerungen: App-Badge und Hinweis, wenn fällige Karten da sind. Am zuverlässigsten, wenn Palabra auf dem Home-Bildschirm liegt. Streak zählt nur nach Tagespensum (oder 20 Karten an einem Tag).</p>
+        <p class="muted small" style="margin-bottom:12px">Nachsprechen ist optional. Es läuft Whisper lokal im Browser – nicht die schwache System-Erkennung. Beim ersten Mal wird das Modell einmal geladen (~75 MB), danach auf dem Gerät. Erinnerungen: App-Badge, wenn Karten fällig sind.</p>
         <button class="btn btn-ghost danger" data-act="reset">Fortschritt löschen</button>
       </div>`;
   }
@@ -729,6 +745,8 @@
             ? `<button class="btn btn-primary" data-act="start" data-mode="dialog" data-dialog="${d.id}">Jetzt üben</button>`
             : `<button class="btn btn-primary" data-act="dlg-next">Weiter</button>`}
         </div>
+        ${store.speechOn ? `<button class="btn ${ui.speechPhase === "recording" ? "btn-primary" : "btn-ghost"}" data-act="listen-say" data-say="${esc(line.es)}" style="margin-top:10px">${speechBtnLabel()}</button>` : ""}
+        ${ui.listenNote ? `<p class="listen-note">${esc(ui.listenNote)}</p>` : ""}
       </div>`;
   }
 
@@ -759,6 +777,57 @@
     ui.session.typed = val;
     ui.session.typeResult = result.note;
     applyAnswer(result.quality);
+  }
+
+  function speechBtnLabel() {
+    if (ui.speechPhase === "loading") return "Lädt…";
+    if (ui.speechPhase === "recording") return "Stopp";
+    if (ui.speechPhase === "busy") return "Erkenne…";
+    return "Nachsprechen";
+  }
+
+  function setListenNote(msg) {
+    if (ui.view === "dialog-play") ui.listenNote = msg;
+    else if (ui.session) ui.session.listenNote = msg;
+  }
+
+  async function startListen(expectedSay) {
+    if (!store.speechOn) return;
+    if (ui.speechPhase === "loading" || ui.speechPhase === "busy") return;
+    const item = currentItem();
+    const target = expectedSay || (item ? displayEs(item) : "");
+    const probe = item && ui.view === "study" ? item : { es: target, pos: "phr" };
+    try {
+      await PalabraSpeech.toggle({
+        onProgress: (p) => {
+          if (ui.speechPhase !== "loading") return;
+          setListenNote("Modell " + p + " % – einmaliger Download.");
+          if (p === 100 || p % 25 === 0) render();
+        },
+        onStatus: (phase) => {
+          ui.speechPhase = phase;
+          if (phase === "loading") setListenNote("Whisper wird geladen. Danach lokal auf dem Gerät.");
+          if (phase === "recording") setListenNote("Sprich jetzt. Nochmal tippen zum Stoppen.");
+          if (phase === "busy") setListenNote("Erkenne mit Whisper…");
+          render();
+        },
+        onResult: (text) => {
+          ui.speechPhase = "idle";
+          setListenNote(scoreSpoken(text, probe).note);
+          render();
+        },
+        onError: (err) => {
+          ui.speechPhase = "idle";
+          setListenNote(err?.message || "Erkennung fehlgeschlagen.");
+          render();
+        }
+      });
+    } catch (err) {
+      ui.speechPhase = "idle";
+      PalabraSpeech.cancel();
+      setListenNote(err?.message || "Mikrofon nicht erkannt.");
+      render();
+    }
   }
 
   function dueTotal() {
@@ -831,7 +900,7 @@
     if (e.button) return;
     if (ui.view !== "study" || swipeLock) return;
     if (ui.session?.showForms) return;
-    if (e.target.closest("[data-act='speak'], [data-act='abort'], [data-act='toggle-forms'], [data-act='type-submit'], .icon-btn, .type-input, .card-tools, .forms-modal")) return;
+    if (e.target.closest("[data-act='speak'], [data-act='abort'], [data-act='toggle-forms'], [data-act='listen-say'], [data-act='type-submit'], .icon-btn, .type-input, .card-tools, .forms-modal")) return;
     const wrap = e.target.closest(".swipe-wrap");
     if (!wrap || !isCardItem(currentItem()) || shouldType(currentItem())) return;
     e.preventDefault();
@@ -903,6 +972,9 @@
       render();
     } else if (act === "forms-noop") {
       return;
+    } else if (act === "listen-say") {
+      e.stopPropagation();
+      startListen(t.dataset.say);
     } else if (act === "open-dialog") {
       ui.dialogId = t.dataset.dialog;
       ui.dialogLine = 0;
@@ -910,12 +982,18 @@
       ui.view = "dialog-play";
       render();
     } else if (act === "dlg-next") {
+      PalabraSpeech.cancel();
+      ui.speechPhase = "idle";
       ui.dialogLine += 1;
       ui.dialogShowDe = false;
+      ui.listenNote = "";
       render();
     } else if (act === "dlg-prev") {
+      PalabraSpeech.cancel();
+      ui.speechPhase = "idle";
       ui.dialogLine = Math.max(0, ui.dialogLine - 1);
       ui.dialogShowDe = false;
+      ui.listenNote = "";
       render();
     } else if (act === "reminders") {
       toggleReminders();
@@ -934,6 +1012,8 @@
     } else if (act === "abort") {
       drag = null;
       swipeLock = false;
+      PalabraSpeech.cancel();
+      ui.speechPhase = "idle";
       ui.view = "home";
       ui.session = null;
       render();
@@ -969,6 +1049,14 @@
     if (t.dataset.act === "size") {
       store.sessionSize = Number(t.value);
       persist();
+    }
+    if (t.dataset.act === "speech") {
+      store.speechOn = t.value === "1";
+      persist();
+      if (!store.speechOn) {
+        PalabraSpeech.cancel();
+        ui.speechPhase = "idle";
+      }
     }
   });
 

@@ -1,4 +1,4 @@
-const CACHE = "palabra-v7";
+const CACHE = "palabra-v8";
 const ASSETS = [
   "./",
   "./index.html",
@@ -12,6 +12,7 @@ const ASSETS = [
   "./js/forms.js",
   "./js/srs.js",
   "./js/storage.js",
+  "./js/speech.js",
   "./js/app.js",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
@@ -35,6 +36,7 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
+  if (!req.url.startsWith(self.location.origin)) return;
   event.respondWith(
     caches.match(req).then((cached) => {
       const fetched = fetch(req)
