@@ -110,6 +110,7 @@
       flipped: false,
       answered: false,
       chosen: null,
+      showTrans: false,
       options: shuffleOptions(queue[0])
     };
     ui.view = "study";
@@ -156,6 +157,7 @@
     ui.session.flipped = false;
     ui.session.answered = false;
     ui.session.chosen = null;
+    ui.session.showTrans = false;
     ui.session.options = shuffleOptions(currentItem());
     render();
   }
@@ -355,32 +357,36 @@
       </div>`;
   }
 
+  function topicButton(t, locked) {
+    const due = t.cards.filter((c) => {
+      const p = getProgress(store, c.id);
+      return p.new || isDue(p, Date.now());
+    }).length;
+    return `<button class="topic ${locked ? "locked" : ""} ${t.featured ? "featured" : ""}" data-topic="${t.id}" ${locked ? "disabled" : ""}>
+      <h3>${esc(t.title)}</h3>
+      <span class="lvl">${t.cards.length} Karten</span>
+      <p>${esc(t.summary)}</p>
+      <span class="muted small">${due} zu üben</span>
+    </button>`;
+  }
+
   function renderGrammar() {
+    const featured = GRAMMAR.filter((t) => t.featured);
     const groups = [1, 2, 3, 4];
     const blocks = groups.map((lv) => {
       const locked = lv > store.unlockedLevel;
-      const topics = GRAMMAR.filter((t) => t.lv === lv);
+      const topics = GRAMMAR.filter((t) => t.lv === lv && !t.featured);
+      if (!topics.length) return "";
       return `
         <div class="section-title">Nivel ${lv}${locked ? " · noch gesperrt" : ""}</div>
-        ${topics
-          .map((t) => {
-            const due = t.cards.filter((c) => {
-              const p = getProgress(store, c.id);
-              return p.new || isDue(p, Date.now());
-            }).length;
-            return `<button class="topic ${locked ? "locked" : ""}" data-topic="${t.id}" ${locked ? "disabled" : ""}>
-              <h3>${esc(t.title)}</h3>
-              <span class="lvl">${t.cards.length} Karten</span>
-              <p>${esc(t.summary)}</p>
-              <span class="muted small">${due} zu üben</span>
-            </button>`;
-          })
-          .join("")}`;
+        ${topics.map((t) => topicButton(t, locked)).join("")}`;
     });
     return `
       <div class="screen">
         <div class="topbar"><h1>Grammatik</h1></div>
-        <p class="muted" style="margin-bottom:8px">Erst die Regel durchgehen, dann einzelne Formen abfragen – nicht die ganze Tabelle auf einmal.</p>
+        <p class="muted" style="margin-bottom:8px">Erst die Regel durchgehen, dann einzelne Formen abfragen. Auf der Karte tippen zeigt die Übersetzung.</p>
+        <div class="section-title">Zum Einprägen</div>
+        ${featured.map((t) => topicButton(t, false)).join("")}
         ${blocks.join("")}
         ${nav("grammar")}
       </div>`;
@@ -396,7 +402,7 @@
         <div class="topbar">
           <button class="icon-btn" data-go="grammar">←</button>
           <div>
-            <div class="small muted">Nivel ${topic.lv}</div>
+            <div class="small muted">${topic.featured ? "Zum Einprägen" : "Nivel " + topic.lv}</div>
             <strong>${esc(topic.title)}</strong>
           </div>
         </div>
@@ -459,13 +465,20 @@
       : esc(item.prompt);
     const options = ui.session.options || item.options;
     const chosenWrong = ui.session.answered && ui.session.chosen === 0;
+    const showDe = Boolean(item.de) && (ui.session.showTrans || ui.session.answered);
     return `
-      <div class="prompt-card">
+      <button class="prompt-card" data-act="toggle-trans" ${item.de ? "" : "disabled"}>
         ${item.topicTitle ? `<span class="tag">${esc(item.topicTitle)}</span>` : `<span class="tag">Satz · Nivel ${item.lv}</span>`}
         <div class="sentence" style="margin-top:12px">${prompt}</div>
         ${item.hint ? `<p class="muted small" style="margin-top:10px">${esc(item.hint)}</p>` : ""}
-        ${isSentence && ui.session.answered ? `<p class="example" style="margin-top:12px">${esc(item.de)}</p>` : ""}
-      </div>
+        ${
+          showDe
+            ? `<p class="card-de">${esc(item.de)}</p>`
+            : item.de
+              ? `<p class="muted small trans-hint">Karte tippen: Übersetzung</p>`
+              : ""
+        }
+      </button>
       <div class="options">
         ${options
           .map((opt) => {
@@ -646,6 +659,10 @@
       render();
     } else if (act === "lesson-prev") {
       ui.lessonIndex = Math.max(0, ui.lessonIndex - 1);
+      render();
+    } else if (act === "toggle-trans") {
+      if (!ui.session || ui.session.answered) return;
+      ui.session.showTrans = !ui.session.showTrans;
       render();
     } else if (act === "flip") {
       if (!ui.session) return;

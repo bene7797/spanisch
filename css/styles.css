@@ -473,7 +473,24 @@ a { color: inherit; }
   padding: 26px 20px;
   text-align: center;
   margin: 12px 0 16px;
+  width: 100%;
 }
+.prompt-card:not(:disabled) { cursor: pointer; }
+.prompt-card:disabled { cursor: default; }
+.card-de {
+  margin-top: 14px;
+  font-size: 17px;
+  line-height: 1.4;
+  color: var(--terracotta-deep);
+  font-style: italic;
+}
+.trans-hint { margin-top: 12px; opacity: 0.75; }
+.topic.featured {
+  background: linear-gradient(160deg, #fff6ea, #f8e8dc);
+  box-shadow: var(--shadow);
+  border: 1px solid #ead2b8;
+}
+.topic.featured h3::before { content: "★ "; color: var(--terracotta); }
 .sentence {
   font-family: var(--serif);
   font-size: 26px;
