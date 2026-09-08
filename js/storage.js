@@ -8,6 +8,10 @@ function defaultStore() {
     unlockedLevel: 1,
     sessionSize: 12,
     direction: "es-de",
+    audioFirst: true,
+    reminders: false,
+    quotaDoneOn: null,
+    lastNotifyDate: null,
     reviewed: 0,
     correctTotal: 0,
     byDay: {},
@@ -48,12 +52,11 @@ function touchStreak(store) {
 }
 
 function recordReview(store, correct) {
-  store = touchStreak(store);
   store.reviewed += 1;
   if (correct) store.correctTotal += 1;
   const day = todayStr();
   store.byDay[day] = (store.byDay[day] || 0) + 1;
-  return store;
+  return maybeCompleteQuota(store);
 }
 
 function vocabForLevelCap(level) {
@@ -63,10 +66,23 @@ function vocabForLevelCap(level) {
 
 function learnedCount(store, level) {
   const words = vocabForLevelCap(level);
-  return words.filter((w) => {
-    const p = getProgress(store, w.id);
-    return !p.new && p.correct >= 1;
-  }).length;
+  return words.filter((w) => firmlyLearned(getProgress(store, w.id))).length;
+}
+
+function completeQuota(store) {
+  const today = todayStr();
+  if (store.quotaDoneOn === today) return store;
+  if (store.quotaDoneOn === yesterdayStr()) store.streak += 1;
+  else store.streak = 1;
+  store.quotaDoneOn = today;
+  store.lastStudyDate = today;
+  return store;
+}
+
+function maybeCompleteQuota(store) {
+  if (store.quotaDoneOn === todayStr()) return store;
+  if ((store.byDay[todayStr()] || 0) >= 20) return completeQuota(store);
+  return store;
 }
 
 function updateUnlock(store) {

@@ -9,7 +9,13 @@
     session: null,
     topicId: null,
     lessonIndex: 0,
-    toast: ""
+    dialogId: null,
+    dialogLine: 0,
+    dialogShowDe: false,
+    listenNote: "",
+    toast: "",
+    listening: false,
+    dialogSpoken: null
   };
 
   let drag = null;
@@ -63,7 +69,11 @@
   }
 
   function vocabItems(level) {
-    return vocabForLevelCap(level).map((v, i) => ({ ...v, type: "vocab", rank: i + 1 }));
+    return vocabForLevelCap(level).map((v, i) => ({ ...v, type: "vocab", rank: i + 1, es: withArticle(v) }));
+  }
+
+  function chunkItems(level) {
+    return CHUNKS.filter((c) => c.lv <= level).map((c, i) => ({ ...c, type: "chunk", pos: "phr", rank: i + 1 }));
   }
 
   function grammarItems(level, topicId) {
@@ -79,21 +89,44 @@
   function poolFor(mode, topicId) {
     const level = store.unlockedLevel;
     if (mode === "vocab") return vocabItems(level);
+    if (mode === "chunk") return chunkItems(level);
     if (mode === "grammar") return grammarItems(level);
     if (mode === "sentence") return sentenceItems(level);
+    if (mode === "dialog") return dialogCards(level);
     if (mode === "topic") return grammarItems(level, topicId);
-    return [...vocabItems(level), ...grammarItems(level), ...sentenceItems(level)];
+    return [...vocabItems(level), ...chunkItems(level), ...grammarItems(level), ...sentenceItems(level)];
+  }
+
+  function isCardItem(item) {
+    return item && (item.type === "vocab" || item.type === "chunk");
+  }
+
+  function shouldType(item) {
+    if (!isCardItem(item)) return false;
+    if (store.direction === "de-es") return true;
+    const p = getProgress(store, item.id);
+    return p.reps >= 2 || p.correct >= 3;
+  }
+
+  function displayEs(item) {
+    if (item.pos === "n") return withArticle(item);
+    return item.es;
   }
 
   function dueCount(mode) {
+    if (mode === "daily") return buildDailyQueue(poolFor("mixed"), store).length;
     return buildQueue(poolFor(mode), store, store.sessionSize).length;
   }
 
   function startSession(mode, opts = {}) {
-    const items = poolFor(mode, opts.topicId);
+    const items = (mode === "dialog" && opts.dialogId
+      ? poolFor("dialog").filter((i) => i.dialogId === opts.dialogId)
+      : poolFor(mode === "daily" ? "mixed" : mode, opts.topicId));
     const queue = opts.forceAll
       ? shuffle(items).slice(0, Math.max(items.length, 1))
-      : buildQueue(items, store, store.sessionSize);
+      : mode === "daily"
+        ? buildDailyQueue(items, store)
+        : buildQueue(items, store, store.sessionSize);
     if (!queue.length) {
       ui.toast = "Gerade nichts Fälliges – neue Karten kommen mit dem nächsten Level.";
       ui.view = "home";
@@ -111,6 +144,11 @@
       answered: false,
       chosen: null,
       showTrans: false,
+      showForms: false,
+      spoken: false,
+      typed: "",
+      typeResult: null,
+      listenNote: "",
       options: shuffleOptions(queue[0])
     };
     ui.view = "study";
@@ -150,6 +188,10 @@
     if (!ui.session) return;
     ui.session.index += 1;
     if (ui.session.index >= ui.session.queue.length) {
+      if (ui.session.mode === "daily") {
+        store = completeQuota(store);
+        persist();
+      }
       ui.view = "result";
       render();
       return;
@@ -158,6 +200,11 @@
     ui.session.answered = false;
     ui.session.chosen = null;
     ui.session.showTrans = false;
+    ui.session.showForms = false;
+    ui.session.spoken = false;
+    ui.session.typed = "";
+    ui.session.typeResult = null;
+    ui.session.listenNote = "";
     ui.session.options = shuffleOptions(currentItem());
     render();
   }
@@ -289,7 +336,8 @@
     const learned = learnedCount(store, store.unlockedLevel);
     const pct = Math.round((learned / cap.length) * 100);
     const level = LEVELS[store.unlockedLevel - 1];
-    const due = dueCount("mixed");
+    const daily = dueCount("daily");
+    const quotaDone = store.quotaDoneOn === todayStr();
     const today = store.byDay[todayStr()] || 0;
     return `
       <div class="screen">
@@ -300,36 +348,36 @@
         </div>
         <div class="greeting">
           <div class="hello">${greeting()}.</div>
-          <p>Karteikarten, Grammatik und Sätze – alles bleibt auf diesem Gerät.</p>
+          <p>${quotaDone ? "Tagespensum sitzt. Streak läuft." : "Heute: 12 fällige plus bis zu 8 neue Karten."}</p>
         </div>
         <div class="hero">
           <div class="hero-kicker">${esc(level.name)} · ${esc(level.subtitle)}</div>
-          <h2>${due ? due + " Karten warten" : "Bereit zum Lernen"}</h2>
-          <div class="progress"><span style="width:${pct}%"></span></div>
-          <div class="hero-meta"><span>${learned} / ${cap.length} Wörter gesehen</span><span>${pct}%</span></div>
-          <button class="btn" data-act="start" data-mode="mixed" style="margin-top:16px;background:#fffaf3;color:#9a3412">Weiterlernen</button>
+          <h2>${quotaDone ? "Pensum erledigt" : daily ? daily + " Karten im Pensum" : "Nichts Fälliges"}</h2>
+          <div class="progress"><span style="width:${quotaDone ? 100 : pct}%"></span></div>
+          <div class="hero-meta"><span>${learned} / ${cap.length} sitzen wirklich</span><span>${pct}%</span></div>
+          <button class="btn" data-act="start" data-mode="${quotaDone ? "mixed" : "daily"}" style="margin-top:16px;background:#fffaf3;color:#9a3412" ${!daily && !quotaDone ? "disabled" : ""}>${quotaDone ? "Extra-Runde" : "Tagespensum"}</button>
         </div>
         <div class="stats-row">
-          <div class="stat"><b>${store.streak}</b><span>Tage Streak</span></div>
+          <div class="stat"><b>${store.streak}</b><span>Tage Pensum</span></div>
           <div class="stat"><b>${today}</b><span>Heute</span></div>
           <div class="stat"><b>${store.unlockedLevel}/4</b><span>Level offen</span></div>
         </div>
         <div class="grid-2">
           <button class="tile" data-act="start" data-mode="vocab">
             <div class="emoji">Aa</div>
-            <div><h3>Vokabeln</h3><p>${dueCount("vocab")} fällig</p></div>
+            <div><h3>Vokabeln</h3><p>${dueCount("vocab")} in der Queue</p></div>
           </button>
-          <button class="tile" data-go="grammar">
+          <button class="tile" data-act="start" data-mode="chunk">
+            <div class="emoji">❝</div>
+            <div><h3>Brocken</h3><p>Fertige Wendungen</p></div>
+          </button>
+          <button class="tile" data-go="dialogs">
             <div class="emoji">☰</div>
-            <div><h3>Grammatik</h3><p>Themen wählen & üben</p></div>
+            <div><h3>Dialoge</h3><p>Café, Weg, Hotel…</p></div>
           </button>
           <button class="tile" data-act="start" data-mode="sentence">
             <div class="emoji">…</div>
             <div><h3>Sätze</h3><p>1 von 4 Optionen</p></div>
-          </button>
-          <button class="tile" data-act="start" data-mode="mixed">
-            <div class="emoji">✦</div>
-            <div><h3>Gemischt</h3><p>Alles durcheinander</p></div>
           </button>
         </div>
         ${installBanner()}
@@ -342,16 +390,18 @@
     return `
       <div class="screen">
         <div class="topbar"><h1>Lernen</h1></div>
-        <p class="muted" style="margin-bottom:16px">Nur eine Sektion oder alles gemischt. Schwache Karten kommen öfter.</p>
-        <button class="tile" style="width:100%;margin-bottom:12px" data-act="start" data-mode="mixed">
+        <p class="muted" style="margin-bottom:16px">Eine Sektion, Brocken, Dialoge oder alles gemischt.</p>
+        <button class="tile" style="width:100%;margin-bottom:12px" data-act="start" data-mode="daily">
           <div class="emoji">✦</div>
-          <div><h3>Gemischte Runde</h3><p>${dueCount("mixed")} Karten in der Queue</p></div>
+          <div><h3>Tagespensum</h3><p>${dueCount("daily")} Karten · Streak nur bei Pensum</p></div>
         </button>
         <div class="grid-2">
-          <button class="tile" data-act="start" data-mode="vocab"><h3>Nur Vokabeln</h3><p>${dueCount("vocab")} fällig</p></button>
-          <button class="tile" data-act="start" data-mode="grammar"><h3>Nur Grammatik</h3><p>${dueCount("grammar")} fällig</p></button>
-          <button class="tile" data-act="start" data-mode="sentence"><h3>Nur Sätze</h3><p>${dueCount("sentence")} fällig</p></button>
-          <button class="tile" data-go="grammar"><h3>Thema wählen</h3><p>Regeln zuerst ansehen</p></button>
+          <button class="tile" data-act="start" data-mode="vocab"><h3>Vokabeln</h3><p>${dueCount("vocab")}</p></button>
+          <button class="tile" data-act="start" data-mode="chunk"><h3>Brocken</h3><p>${dueCount("chunk")}</p></button>
+          <button class="tile" data-act="start" data-mode="sentence"><h3>Sätze</h3><p>${dueCount("sentence")}</p></button>
+          <button class="tile" data-go="dialogs"><h3>Dialoge</h3><p>Hören & nachsprechen</p></button>
+          <button class="tile" data-act="start" data-mode="grammar"><h3>Grammatik</h3><p>${dueCount("grammar")}</p></button>
+          <button class="tile" data-act="start" data-mode="mixed"><h3>Gemischt</h3><p>${dueCount("mixed")}</p></button>
         </div>
         ${nav("learn")}
       </div>`;
@@ -423,11 +473,42 @@
   }
 
   function renderVocabCard(item) {
-    const esFirst = store.direction !== "de-es";
-    const front = esFirst ? item.es : item.de;
-    const back = esFirst ? item.de : item.es;
+    const typing = shouldType(item);
+    const es = displayEs(item);
+    const hideWord = store.audioFirst && !ui.session.flipped && !typing;
+    const forms = getWordForms(item);
+    const front = hideWord ? "🎧" : es;
+    const frontHint = hideWord ? "Erst hören, dann Karte tippen" : "Tippen zum Umdrehen";
+    const tools = `
+      <div class="card-tools">
+        <button class="tool-btn" data-act="listen-say" data-say="${esc(es)}">🎙 Nachsprechen</button>
+        ${forms ? `<button class="tool-btn" data-act="toggle-forms">Alle Formen</button>` : ""}
+      </div>
+      ${ui.session.listenNote ? `<p class="muted small" style="text-align:center">${esc(ui.session.listenNote)}</p>` : ""}
+      ${ui.session.showForms && forms ? renderFormsBox(forms) : ""}`;
+    if (typing) {
+      return `
+      <button class="speak-bar" data-act="speak" data-say="${esc(es)}">
+        <span class="speak-icon">🔊</span>
+        Anhören
+      </button>
+      <div class="prompt-card type-card">
+        <span class="tag">${esc(POS_DE[item.pos] || item.pos)} · Nivel ${item.lv}</span>
+        <div class="word" style="margin-top:10px">${esc(item.de)}</div>
+        <p class="muted small">Schreib die spanische Form${item.pos === "n" ? " mit Artikel" : ""}.</p>
+        ${
+          ui.session.answered
+            ? `<p class="card-de">${esc(es)}</p>
+               <div class="feedback ${ui.session.chosen ? "ok" : "no"}">${esc(ui.session.typeResult || "")}</div>
+               <button class="btn btn-primary" data-act="next">Weiter</button>`
+            : `<input class="type-input" data-type-input="1" type="text" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="español…" value="${esc(ui.session.typed || "")}" />
+               <button class="btn btn-primary" data-act="type-submit" style="margin-top:10px">Prüfen</button>`
+        }
+      </div>
+      ${tools}`;
+    }
     return `
-      <button class="speak-bar" data-act="speak" data-say="${esc(item.es)}">
+      <button class="speak-bar" data-act="speak" data-say="${esc(es)}">
         <span class="speak-icon">🔊</span>
         Anhören
       </button>
@@ -439,23 +520,32 @@
           <div class="flip-card ${ui.session.flipped ? "flipped" : ""}">
             <div class="face">
               <span class="tag">${esc(POS_DE[item.pos] || item.pos)} · Nivel ${item.lv}</span>
-              <div class="word">${esc(front)}</div>
-              <p class="muted small">Tippen zum Umdrehen</p>
+              <div class="word ${hideWord ? "listen-only" : ""}">${esc(front)}</div>
+              <p class="muted small">${frontHint}</p>
             </div>
             <div class="face back">
               <span class="tag">${esc(POS_DE[item.pos] || item.pos)}</span>
-              <div class="word">${esc(back)}</div>
-              <p class="example">${esc(esFirst ? item.exde : item.ex)}</p>
-              <p class="example"><em>${esc(esFirst ? item.ex : item.exde)}</em></p>
+              <div class="word">${esc(item.de)}</div>
+              <p class="example">${esc(es)}</p>
+              <p class="example">${esc(item.exde || "")}</p>
+              <p class="example"><em>${esc(item.ex || "")}</em></p>
             </div>
           </div>
         </div>
       </div>
+      ${tools}
       <div class="swipe-hint">
         <span class="no">← falsch</span>
         <span class="easy">↑ sitzt</span>
         <span class="yes">richtig →</span>
       </div>`;
+  }
+
+  function renderFormsBox(forms) {
+    return `<div class="forms-box">
+      <div class="tag">${esc(forms.title)}</div>
+      <table class="table">${forms.rows.map((r) => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td></tr>`).join("")}</table>
+    </div>`;
   }
 
   function renderChoice(item) {
@@ -468,7 +558,7 @@
     const showDe = Boolean(item.de) && (ui.session.showTrans || ui.session.answered);
     return `
       <button class="prompt-card" data-act="toggle-trans" ${item.de ? "" : "disabled"}>
-        ${item.topicTitle ? `<span class="tag">${esc(item.topicTitle)}</span>` : `<span class="tag">Satz · Nivel ${item.lv}</span>`}
+        ${item.topicTitle ? `<span class="tag">${esc(item.topicTitle)}</span>` : item.dialogTitle ? `<span class="tag">${esc(item.dialogTitle)}</span>` : `<span class="tag">Satz · Nivel ${item.lv}</span>`}
         <div class="sentence" style="margin-top:12px">${prompt}</div>
         ${item.hint ? `<p class="muted small" style="margin-top:10px">${esc(item.hint)}</p>` : ""}
         ${
@@ -504,16 +594,16 @@
     if (!item) return renderHome();
     const s = ui.session;
     const pct = Math.round((s.index / s.queue.length) * 100);
-    const labels = { vocab: "Vokabeln", grammar: "Grammatik", sentence: "Sätze", mixed: "Gemischt", topic: "Thema" };
+    const labels = { vocab: "Vokabeln", grammar: "Grammatik", sentence: "Sätze", mixed: "Gemischt", topic: "Thema", chunk: "Brocken", daily: "Pensum", dialog: "Dialog" };
     return `
-      <div class="screen no-nav ${item.type === "vocab" ? "study-vocab" : ""}">
+      <div class="screen no-nav ${isCardItem(item) ? "study-vocab" : ""}">
         <div class="session-top">
           <button class="icon-btn" data-act="abort">×</button>
           <span class="chip">${labels[s.mode] || "Runde"}</span>
           <span class="session-count">${s.index + 1} / ${s.queue.length}</span>
         </div>
         <div class="thin-progress"><span style="width:${pct}%"></span></div>
-        ${item.type === "vocab" ? renderVocabCard(item) : renderChoice(item)}
+        ${isCardItem(item) ? renderVocabCard(item) : renderChoice(item)}
       </div>`;
   }
 
@@ -528,8 +618,8 @@
           <div class="score">${pct}%</div>
           <p>${s.correct} richtig · ${s.wrong} nochmal einplanen</p>
         </div>
-        <p class="muted" style="text-align:center;margin:12px 0 18px">Falsche Karten kommen früher wieder. Streak: ${store.streak} Tage.</p>
-        <button class="btn btn-primary" data-act="start" data-mode="${s.mode}" data-topic="${s.topicId || ""}">Noch eine Runde</button>
+        <p class="muted" style="text-align:center;margin:12px 0 18px">${s.mode === "daily" ? "Tagespensum zählt für den Streak." : "Falsche Karten kommen früher wieder."} Streak: ${store.streak} Tage.</p>
+        <button class="btn btn-primary" data-act="start" data-mode="${s.mode === "daily" ? "mixed" : s.mode}" data-topic="${s.topicId || ""}">Noch eine Runde</button>
         <button class="btn btn-ghost" data-go="home" style="margin-top:10px">Zur Übersicht</button>
         ${nav("learn")}
       </div>`;
@@ -541,7 +631,7 @@
       .filter(({ p }) => p.wrong > p.correct && !p.new)
       .sort((a, b) => b.p.wrong - a.p.wrong)
       .slice(0, 8);
-    const lookup = [...VOCAB, ...SENTENCES, ...GRAMMAR.flatMap((t) => t.cards)];
+    const lookup = [...VOCAB, ...CHUNKS, ...SENTENCES, ...GRAMMAR.flatMap((t) => t.cards), ...dialogCards(4)];
     const rows = weak.map(({ id }) => {
       const item = lookup.find((x) => x.id === id);
       if (!item) return "";
@@ -582,8 +672,14 @@
         <div class="settings-card">
           <label class="setting">Kartenrichtung
             <select class="select" data-act="direction">
-              <option value="es-de" ${store.direction === "es-de" ? "selected" : ""}>ES → DE</option>
-              <option value="de-es" ${store.direction === "de-es" ? "selected" : ""}>DE → ES</option>
+              <option value="es-de" ${store.direction === "es-de" ? "selected" : ""}>ES → DE (Wischen)</option>
+              <option value="de-es" ${store.direction === "de-es" ? "selected" : ""}>DE → ES (Tippen)</option>
+            </select>
+          </label>
+          <label class="setting">Erst hören
+            <select class="select" data-act="audioFirst">
+              <option value="1" ${store.audioFirst ? "selected" : ""}>An</option>
+              <option value="0" ${store.audioFirst ? "" : "selected"}>Aus</option>
             </select>
           </label>
           <label class="setting">Karten pro Runde
@@ -592,13 +688,71 @@
             </select>
           </label>
         </div>
-        <p class="muted small" style="margin-bottom:12px">Alles liegt nur in diesem Browser (localStorage). Kein Konto, keine Cloud.</p>
+        <button class="btn ${store.reminders ? "btn-primary" : "btn-ghost"}" data-act="reminders" style="margin-bottom:12px">${store.reminders ? "Erinnerungen an" : "Erinnerungen einschalten"}</button>
+        ${ui.toast ? `<p class="muted small" style="margin-bottom:12px">${esc(ui.toast)}</p>` : ""}
+        <p class="muted small" style="margin-bottom:12px">Erinnerungen: App-Badge und Hinweis, wenn fällige Karten da sind. Am zuverlässigsten, wenn Palabra auf dem Home-Bildschirm liegt. Streak zählt nur nach Tagespensum (oder 20 Karten an einem Tag).</p>
         <button class="btn btn-ghost danger" data-act="reset">Fortschritt löschen</button>
       </div>`;
   }
 
+  function renderDialogs() {
+    const list = DIALOGS.filter((d) => d.lv <= store.unlockedLevel);
+    return `
+      <div class="screen">
+        <div class="topbar"><h1>Dialoge</h1></div>
+        <p class="muted" style="margin-bottom:12px">Erst anhören, dann die Zeilen abfragen.</p>
+        ${list
+          .map(
+            (d) => `<button class="topic" data-act="open-dialog" data-dialog="${d.id}">
+              <h3>${esc(d.title)}</h3>
+              <span class="lvl">Nivel ${d.lv}</span>
+              <p>${esc(d.scene)}</p>
+              <span class="muted small">${d.lines.length} Zeilen</span>
+            </button>`
+          )
+          .join("")}
+        <button class="btn btn-primary" data-act="start" data-mode="dialog" style="margin-top:8px">Alle Dialoge üben</button>
+        ${nav("learn")}
+      </div>`;
+  }
+
+  function renderDialogPlay() {
+    const d = DIALOGS.find((x) => x.id === ui.dialogId);
+    if (!d) return renderDialogs();
+    const line = d.lines[ui.dialogLine];
+    const last = ui.dialogLine === d.lines.length - 1;
+    return `
+      <div class="screen no-nav">
+        <div class="topbar">
+          <button class="icon-btn" data-go="dialogs">←</button>
+          <div>
+            <div class="small muted">${esc(d.scene)}</div>
+            <strong>${esc(d.title)}</strong>
+          </div>
+        </div>
+        <button class="speak-bar" data-act="speak" data-say="${esc(line.es)}">
+          <span class="speak-icon">🔊</span>
+          Anhören
+        </button>
+        <div class="prompt-card" data-act="toggle-trans">
+          <span class="tag">${esc(line.who)}</span>
+          <div class="sentence" style="margin-top:12px">${esc(line.es)}</div>
+          ${ui.dialogShowDe ? `<p class="card-de">${esc(line.de)}</p>` : `<p class="muted small trans-hint">Tippen: Übersetzung</p>`}
+        </div>
+        <div class="dots">${d.lines.map((_, i) => `<i class="${i === ui.dialogLine ? "on" : ""}"></i>`).join("")}</div>
+        <div class="grid-2">
+          <button class="btn btn-ghost" data-act="dlg-prev" ${ui.dialogLine === 0 ? "disabled" : ""}>Zurück</button>
+          ${last
+            ? `<button class="btn btn-primary" data-act="start" data-mode="dialog" data-dialog="${d.id}">Jetzt üben</button>`
+            : `<button class="btn btn-primary" data-act="dlg-next">Weiter</button>`}
+        </div>
+        <button class="btn btn-ghost" data-act="listen-say" data-say="${esc(line.es)}" style="margin-top:10px">🎙 Nachsprechen</button>
+        ${ui.listenNote ? `<p class="muted small" style="text-align:center;margin-top:8px">${esc(ui.listenNote)}</p>` : ""}
+      </div>`;
+  }
+
   function render() {
-    ui.toast = ui.view === "home" ? ui.toast : "";
+    if (ui.view !== "home" && ui.view !== "settings") ui.toast = "";
     const map = {
       home: renderHome,
       learn: renderLearn,
@@ -607,17 +761,156 @@
       study: renderStudy,
       result: renderResult,
       stats: renderStats,
-      settings: renderSettings
+      settings: renderSettings,
+      dialogs: renderDialogs,
+      "dialog-play": renderDialogPlay
     };
     app.innerHTML = (map[ui.view] || renderHome)();
+    afterRender();
+  }
+
+  function submitTyped() {
+    const item = currentItem();
+    if (!item || !ui.session || ui.session.answered) return;
+    const input = app.querySelector(".type-input");
+    const val = input ? input.value : ui.session.typed || "";
+    const result = scoreTyped(val, item);
+    ui.session.typed = val;
+    ui.session.typeResult = result.note;
+    applyAnswer(result.quality);
+  }
+
+  function startListen(expectedSay) {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const setNote = (msg) => {
+      if (ui.view === "dialog-play") ui.listenNote = msg;
+      else if (ui.session) ui.session.listenNote = msg;
+    };
+    if (!SR) {
+      ui.listening = false;
+      setNote("Nachsprechen klappt in Chrome oder aktuellem Safari.");
+      render();
+      return;
+    }
+    const item = currentItem();
+    const target = expectedSay || (item ? displayEs(item) : "");
+    const rec = new SR();
+    rec.lang = "es-ES";
+    rec.interimResults = false;
+    rec.maxAlternatives = 3;
+    rec.onresult = (ev) => {
+      ui.listening = false;
+      const heard = Array.from(ev.results[0]).map((r) => r.transcript).join(" ");
+      const probe = item && ui.view === "study" ? item : { es: target, pos: "phr" };
+      setNote(scoreSpoken(heard, probe).note);
+      render();
+    };
+    rec.onerror = () => {
+      ui.listening = false;
+      setNote("Mikrofon nicht erkannt.");
+      render();
+    };
+    rec.onend = () => {
+      ui.listening = false;
+    };
+    ui.listening = true;
+    if (ui.view === "dialog-play") ui.dialogSpoken = ui.dialogId + ":" + ui.dialogLine;
+    setNote("Sprech jetzt…");
+    try {
+      rec.start();
+    } catch {
+      ui.listening = false;
+      setNote("Mikrofon schon aktiv.");
+    }
+    render();
+  }
+
+  function dueTotal() {
+    return pickDue(poolFor("mixed"), store, Date.now()).length;
+  }
+
+  function updateBadge() {
+    const n = dueTotal();
+    if (navigator.setAppBadge) navigator.setAppBadge(n).catch(() => {});
+    else if (n === 0 && navigator.clearAppBadge) navigator.clearAppBadge();
+  }
+
+  async function toggleReminders() {
+    if (store.reminders) {
+      store.reminders = false;
+      persist();
+      if (navigator.clearAppBadge) navigator.clearAppBadge();
+      render();
+      return;
+    }
+    if (!("Notification" in window)) {
+      ui.toast = "Dieser Browser kann keine Hinweise.";
+      ui.view = "settings";
+      render();
+      return;
+    }
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") {
+      ui.toast = "Ohne Erlaubnis keine Erinnerung.";
+      render();
+      return;
+    }
+    store.reminders = true;
+    persist();
+    notifyDue(true);
+    render();
+  }
+
+  function notifyDue(force) {
+    if (!store.reminders || !("Notification" in window) || Notification.permission !== "granted") return;
+    const n = dueTotal();
+    if (!n) return;
+    const today = todayStr();
+    if (!force && store.lastNotifyDate === today) return;
+    store.lastNotifyDate = today;
+    persist();
+    const body = n === 1 ? "1 Karte ist fällig." : n + " Karten sind fällig.";
+    if (navigator.serviceWorker) {
+      navigator.serviceWorker.ready.then((reg) =>
+        reg.showNotification("Palabra", { body, icon: "./icons/icon-192.png", badge: "./icons/icon-192.png", tag: "palabra-due" })
+      );
+    } else new Notification("Palabra", { body });
+  }
+
+  function afterRender() {
+    updateBadge();
+    const item = currentItem();
+    if (ui.view === "study" && isCardItem(item) && store.audioFirst && !ui.session.spoken && !shouldType(item) && !ui.listening) {
+      ui.session.spoken = true;
+      window.setTimeout(() => speak(displayEs(item)), 250);
+    }
+    if (ui.view === "dialog-play" && !ui.listening) {
+      const d = DIALOGS.find((x) => x.id === ui.dialogId);
+      const line = d?.lines[ui.dialogLine];
+      const key = ui.dialogId + ":" + ui.dialogLine;
+      if (line && store.audioFirst && ui.dialogSpoken !== key) {
+        ui.dialogSpoken = key;
+        window.setTimeout(() => speak(line.es), 250);
+      }
+    }
+    const input = app.querySelector(".type-input");
+    if (input) {
+      input.focus();
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          submitTyped();
+        }
+      });
+    }
   }
 
   app.addEventListener("pointerdown", (e) => {
     if (e.button) return;
     if (ui.view !== "study" || swipeLock) return;
-    if (e.target.closest("[data-act='speak'], [data-act='abort'], .icon-btn")) return;
+    if (e.target.closest("[data-act='speak'], [data-act='abort'], [data-act='listen-say'], [data-act='toggle-forms'], [data-act='type-submit'], .icon-btn, .type-input, .card-tools, .forms-box")) return;
     const wrap = e.target.closest(".swipe-wrap");
-    if (!wrap || currentItem()?.type !== "vocab") return;
+    if (!wrap || !isCardItem(currentItem()) || shouldType(currentItem())) return;
     e.preventDefault();
     drag = { x: e.clientX, y: e.clientY, wrap, moved: false };
     window.addEventListener("pointermove", onSwipeMove);
@@ -647,9 +940,11 @@
     if (act === "start") {
       const mode = t.dataset.mode || "mixed";
       const topic = t.dataset.topic;
+      const dialog = t.dataset.dialog;
       startSession(mode === "topic" || topic ? "topic" : mode, {
         topicId: topic || ui.topicId,
-        forceAll: mode === "topic" || Boolean(topic)
+        dialogId: dialog || null,
+        forceAll: mode === "topic" || Boolean(topic) || Boolean(dialog)
       });
     } else if (act === "practice-topic") {
       startSession("topic", { topicId: ui.topicId, forceAll: true });
@@ -661,9 +956,43 @@
       ui.lessonIndex = Math.max(0, ui.lessonIndex - 1);
       render();
     } else if (act === "toggle-trans") {
+      if (ui.view === "dialog-play") {
+        ui.dialogShowDe = !ui.dialogShowDe;
+        render();
+        return;
+      }
       if (!ui.session || ui.session.answered) return;
       ui.session.showTrans = !ui.session.showTrans;
       render();
+    } else if (act === "type-submit") {
+      submitTyped();
+    } else if (act === "toggle-forms") {
+      e.stopPropagation();
+      if (!ui.session) return;
+      ui.session.showForms = !ui.session.showForms;
+      render();
+    } else if (act === "listen-say") {
+      e.stopPropagation();
+      startListen(t.dataset.say);
+    } else if (act === "open-dialog") {
+      ui.dialogId = t.dataset.dialog;
+      ui.dialogLine = 0;
+      ui.dialogShowDe = false;
+      ui.listenNote = "";
+      ui.view = "dialog-play";
+      render();
+    } else if (act === "dlg-next") {
+      ui.dialogLine += 1;
+      ui.dialogShowDe = false;
+      ui.listenNote = "";
+      render();
+    } else if (act === "dlg-prev") {
+      ui.dialogLine = Math.max(0, ui.dialogLine - 1);
+      ui.dialogShowDe = false;
+      ui.listenNote = "";
+      render();
+    } else if (act === "reminders") {
+      toggleReminders();
     } else if (act === "flip") {
       if (!ui.session) return;
       ui.session.flipped = !ui.session.flipped;
@@ -679,6 +1008,7 @@
     } else if (act === "abort") {
       drag = null;
       swipeLock = false;
+      ui.listening = false;
       ui.view = "home";
       ui.session = null;
       render();
@@ -711,9 +1041,24 @@
       store.direction = t.value;
       persist();
     }
+    if (t.dataset.act === "audioFirst") {
+      store.audioFirst = t.value === "1";
+      persist();
+    }
     if (t.dataset.act === "size") {
       store.sessionSize = Number(t.value);
       persist();
+    }
+  });
+
+  app.addEventListener("input", (e) => {
+    if (e.target.classList.contains("type-input") && ui.session) ui.session.typed = e.target.value;
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      updateBadge();
+      notifyDue(false);
     }
   });
 
@@ -729,7 +1074,13 @@
   });
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js").catch(() => {});
+    navigator.serviceWorker.register("./sw.js").then(() => {
+      updateBadge();
+      notifyDue(false);
+    }).catch(() => {});
+  } else {
+    updateBadge();
+    notifyDue(false);
   }
 
   if (window.speechSynthesis) {

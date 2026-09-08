@@ -94,6 +94,18 @@ function buildQueue(items, store, size) {
   return queue.slice(0, size);
 }
 
+function buildDailyQueue(items, store) {
+  const now = Date.now();
+  const due = pickDue(items, store, now).slice(0, 12);
+  const seen = new Set(due.map((i) => i.id));
+  const news = pickNew(items, store, 8).filter((i) => !seen.has(i.id));
+  return [...due, ...news];
+}
+
 function mastered(p) {
   return !p.new && p.reps >= 2 && p.interval >= 2 * DAY;
+}
+
+function firmlyLearned(p) {
+  return !p.new && p.reps >= 2 && p.correct >= 2;
 }

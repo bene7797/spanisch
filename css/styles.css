@@ -689,6 +689,52 @@ a { color: inherit; }
   font-weight: 600;
 }
 
+.type-input {
+  width: 100%;
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 2px solid var(--line);
+  border-radius: 16px;
+  font-family: var(--serif);
+  font-size: 22px;
+  text-align: center;
+  background: var(--bg);
+  color: var(--ink);
+}
+.type-input:focus {
+  outline: none;
+  border-color: var(--terracotta);
+}
+.card-tools {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin: 8px 0 4px;
+}
+.tool-btn {
+  background: var(--bg-2);
+  border: 0;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+}
+.forms-box {
+  background: var(--paper);
+  border-radius: 20px;
+  padding: 14px 16px;
+  margin: 8px 0 12px;
+  box-shadow: var(--shadow);
+}
+.forms-box .table { margin: 8px 0 0; }
+.word.listen-only {
+  font-size: 48px;
+  line-height: 1;
+}
+
 @media (min-width: 900px) {
   body {
     background: #e7d8c8;

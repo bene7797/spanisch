@@ -1,4 +1,4 @@
-const CACHE = "palabra-v3";
+const CACHE = "palabra-v4";
 const ASSETS = [
   "./",
   "./index.html",
@@ -7,6 +7,9 @@ const ASSETS = [
   "./js/data-vocab.js",
   "./js/data-grammar.js",
   "./js/data-sentences.js",
+  "./js/data-chunks.js",
+  "./js/data-dialogs.js",
+  "./js/forms.js",
   "./js/srs.js",
   "./js/storage.js",
   "./js/app.js",
@@ -44,6 +47,17 @@ self.addEventListener("fetch", (event) => {
         })
         .catch(() => cached);
       return cached || fetched;
+    })
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientsArr) => {
+      const existing = clientsArr.find((c) => "focus" in c);
+      if (existing) return existing.focus();
+      if (self.clients.openWindow) return self.clients.openWindow("./index.html");
     })
   );
 });
