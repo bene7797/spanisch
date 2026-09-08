@@ -16,8 +16,13 @@ function defaultProgress() {
   };
 }
 
-function getProgress(store, id) {
-  return store.progress[id] || defaultProgress();
+function progressId(itemOrId) {
+  if (itemOrId && typeof itemOrId === "object") return itemOrId.sid || itemOrId.id;
+  return itemOrId;
+}
+
+function getProgress(store, itemOrId) {
+  return store.progress[progressId(itemOrId)] || defaultProgress();
 }
 
 function isDue(p, now) {
@@ -62,14 +67,14 @@ function dueScore(p, now) {
 }
 
 function pickNew(items, store, limit) {
-  const fresh = items.filter((item) => getProgress(store, item.id).new);
+  const fresh = items.filter((item) => getProgress(store, item).new);
   fresh.sort((a, b) => (a.rank || 0) - (b.rank || 0));
   return fresh.slice(0, limit);
 }
 
 function pickDue(items, store, now) {
   return items
-    .map((item) => ({ item, p: getProgress(store, item.id) }))
+    .map((item) => ({ item, p: getProgress(store, item) }))
     .filter(({ p }) => isDue(p, now))
     .sort((a, b) => dueScore(b.p, now) - dueScore(a.p, now))
     .map(({ item }) => item);
@@ -85,7 +90,7 @@ function buildQueue(items, store, size) {
     const seen = new Set(queue.map((i) => i.id));
     const extras = items
       .filter((i) => !seen.has(i.id))
-      .map((item) => ({ item, p: getProgress(store, item.id) }))
+      .map((item) => ({ item, p: getProgress(store, item) }))
       .sort((a, b) => a.p.due - b.p.due)
       .map(({ item }) => item)
       .slice(0, size - queue.length);

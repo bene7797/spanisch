@@ -16,7 +16,10 @@
     formsLockUntil: 0,
     listenNote: "",
     speechPhase: "idle",
-    modelProgress: { pct: 0, label: "" }
+    speechStatus: { phase: "idle", pct: 0, label: "" },
+    modelProgress: { pct: 0, label: "" },
+    catId: null,
+    addForm: { de: "", word: "", pos: "n" }
   };
 
   let drag = null;
@@ -48,11 +51,62 @@
     saveStore(store);
   }
 
+  function switchLang(next) {
+    if (next !== "es" && next !== "it") return;
+    PalabraSpeech.cancel();
+    ui.speechPhase = "idle";
+    ui.session = null;
+    store.lang = next;
+    store.unlockedLevel = langUnlocked(store);
+    store.streak = store.streaks?.[next] || 0;
+    store.quotaDoneOn = store.quotaByLang?.[next] || null;
+    persist();
+    render();
+  }
+
+  function saveCustomWord() {
+    const f = ui.addForm || {};
+    const de = String(f.de || "").trim();
+    const word = String(f.word || "").trim();
+    if (!de || !word) {
+      ui.toast = "Deutsch und die Übersetzung brauchen beide einen Eintrag.";
+      ui.view = "add-word";
+      render();
+      return;
+    }
+    const existing = findExistingVocab(store, de, word);
+    if (existing) {
+      ui.toast = "Gibt’s schon – Fortschritt bleibt am vorhandenen Wort hängen.";
+      ui.catId = (existing.cat && existing.cat[0]) || null;
+      ui.view = "vocab-cats";
+      render();
+      return;
+    }
+    const item = addCustomWord(store, {
+      de,
+      word,
+      es: store.lang === "es" ? word : "",
+      it: store.lang === "it" ? word : word,
+      pos: f.pos || "n"
+    });
+    persist();
+    ui.addForm = { de: "", word: "", pos: "n" };
+    ui.toast = "Gespeichert: " + item.de + " → " + (store.lang === "it" ? item.it : item.es);
+    ui.view = "vocab-cats";
+    render();
+  }
+
   function greeting() {
-    const h = new Date().getHours();
-    if (h < 12) return "Buenos días";
-    if (h < 18) return "Buenas tardes";
-    return "Buenas noches";
+    return langOf(store).greet(new Date().getHours());
+  }
+
+  function langCode() {
+    return langOf(store).code;
+  }
+
+  function tagItem(item) {
+    const loc = localizeItem(item, store.lang);
+    return { ...loc, sid: itemKey(store, loc) };
   }
 
   function speak(text) {
@@ -61,39 +115,48 @@
     const bar = document.querySelector(".speak-bar");
     if (bar) bar.classList.add("playing");
     const u = new SpeechSynthesisUtterance(text);
-    u.lang = "es-ES";
+    const L = langOf(store);
+    u.lang = L.tts;
     const voices = window.speechSynthesis.getVoices();
-    const es = voices.find((v) => v.lang.startsWith("es"));
-    if (es) u.voice = es;
+    const match = voices.find((v) => v.lang.toLowerCase().startsWith(L.voicePrefix));
+    if (match) u.voice = match;
     u.onend = u.onerror = () => bar && bar.classList.remove("playing");
     window.speechSynthesis.speak(u);
   }
 
-  function vocabItems(level) {
-    return vocabForLevelCap(level).map((v, i) => ({ ...v, type: "vocab", rank: i + 1, es: withArticle(v) }));
+  function vocabItems(level, catId, packLevel) {
+    const src = catId ? vocabByCategory(store, catId).filter((v) => v.custom || v.lv <= level) : vocabForLevelCap(packLevel || level, store);
+    return src.map((v, i) => {
+      const loc = tagItem(v);
+      return { ...loc, type: "vocab", rank: i + 1, es: withArticle(loc) };
+    });
   }
 
   function chunkItems(level) {
-    return CHUNKS.filter((c) => c.lv <= level).map((c, i) => ({ ...c, type: "chunk", pos: "phr", rank: i + 1 }));
+    return activeChunks(store)
+      .filter((c) => c.lv <= level)
+      .map((c, i) => ({ ...tagItem(c), type: "chunk", pos: "phr", rank: i + 1 }));
   }
 
   function grammarItems(level, topicId) {
-    return GRAMMAR.filter((t) => t.lv <= level && (!topicId || t.id === topicId)).flatMap((t) =>
-      t.cards.map((c) => ({ ...c, type: "grammar", lv: t.lv, topicId: t.id, topicTitle: t.title }))
-    );
+    return activeGrammar(store)
+      .filter((t) => t.lv <= level && (!topicId || t.id === topicId))
+      .flatMap((t) => t.cards.map((c) => tagItem({ ...c, type: "grammar", lv: t.lv, topicId: t.id, topicTitle: t.title })));
   }
 
   function sentenceItems(level) {
-    return SENTENCES.filter((s) => s.lv <= level).map((s) => ({ ...s, type: "sentence" }));
+    return activeSentences(store)
+      .filter((s) => s.lv <= level)
+      .map((s) => tagItem({ ...s, type: "sentence" }));
   }
 
-  function poolFor(mode, topicId) {
-    const level = store.unlockedLevel;
-    if (mode === "vocab") return vocabItems(level);
+  function poolFor(mode, topicId, catId, packLevel) {
+    const level = langUnlocked(store);
+    if (mode === "vocab") return vocabItems(level, catId, packLevel);
     if (mode === "chunk") return chunkItems(level);
     if (mode === "grammar") return grammarItems(level);
     if (mode === "sentence") return sentenceItems(level);
-    if (mode === "dialog") return dialogCards(level);
+    if (mode === "dialog") return dialogCardsFor(store, level);
     if (mode === "topic") return grammarItems(level, topicId);
     if (mode === "speak") return [...vocabItems(level), ...chunkItems(level)];
     return [...vocabItems(level), ...chunkItems(level), ...grammarItems(level), ...sentenceItems(level)];
@@ -106,7 +169,7 @@
   function shouldType(item) {
     if (!isCardItem(item)) return false;
     if (ui.session?.mode === "speak") return false;
-    return store.direction === "de-es";
+    return Boolean(store.typeAnswers) && store.direction === "de-es";
   }
 
   function isSpeakMode() {
@@ -126,7 +189,7 @@
   function startSession(mode, opts = {}) {
     const items = (mode === "dialog" && opts.dialogId
       ? poolFor("dialog").filter((i) => i.dialogId === opts.dialogId)
-      : poolFor(mode === "daily" ? "mixed" : mode, opts.topicId));
+      : poolFor(mode === "daily" ? "mixed" : mode, opts.topicId, opts.catId, opts.packLevel));
     const queue = opts.forceAll
       ? shuffle(items).slice(0, Math.max(items.length, 1))
       : mode === "daily"
@@ -141,6 +204,8 @@
     ui.session = {
       mode,
       topicId: opts.topicId || null,
+      catId: opts.catId || null,
+      packLevel: opts.packLevel || null,
       queue,
       index: 0,
       correct: 0,
@@ -172,8 +237,8 @@
     const item = currentItem();
     if (!item || !ui.session || ui.session.answered) return;
     const now = Date.now();
-    const prev = getProgress(store, item.id);
-    store.progress[item.id] = schedule(prev, quality, now);
+    const prev = getProgress(store, item);
+    store.progress[item.sid || itemKey(store, item)] = schedule(prev, quality, now);
     store = recordReview(store, quality > 0);
     persist();
     ui.session.answered = true;
@@ -348,10 +413,10 @@
   }
 
   function renderHome() {
-    const cap = vocabForLevelCap(store.unlockedLevel);
-    const learned = learnedCount(store, store.unlockedLevel);
-    const pct = Math.round((learned / cap.length) * 100);
-    const level = LEVELS[store.unlockedLevel - 1];
+    const cap = vocabForLevelCap(langUnlocked(store), store);
+    const learned = learnedCount(store, langUnlocked(store));
+    const pct = Math.round((learned / Math.max(1, cap.length)) * 100);
+    const level = LEVELS[langUnlocked(store) - 1];
     const daily = dueCount("daily");
     const quotaDone = store.quotaDoneOn === todayStr();
     const today = store.byDay[todayStr()] || 0;
@@ -360,11 +425,25 @@
         <div class="topbar">
           <div class="brand">Palabra</div>
           <div class="spacer"></div>
+          <div class="lang-switch" role="group" aria-label="Sprache">
+            <button data-act="set-lang" data-lang="es" class="${store.lang === "es" ? "on" : ""}">ES</button>
+            <button data-act="set-lang" data-lang="it" class="${store.lang === "it" ? "on" : ""}">IT</button>
+          </div>
           <button class="icon-btn" data-go="settings" title="Einstellungen">⚙</button>
         </div>
         <div class="greeting">
           <div class="hello">${greeting()}.</div>
-          <p>${quotaDone ? "Tagespensum sitzt. Streak läuft." : "Heute: 12 fällige plus bis zu 8 neue Karten."}</p>
+          <p>${quotaDone ? "Tagespensum sitzt. Streak läuft." : "Heute: 12 fällige plus bis zu 8 neue Karten · " + langOf(store).name + "."}</p>
+        </div>
+        <div class="dir-switch" role="group" aria-label="Kartenrichtung">
+          <button class="dir-btn ${store.direction === "es-de" ? "on" : ""}" data-act="set-dir" data-dir="es-de">
+            <b>${langCode()} → DE</b>
+            <span>sehen und wischen</span>
+          </button>
+          <button class="dir-btn ${store.direction === "de-es" ? "on" : ""}" data-act="set-dir" data-dir="de-es">
+            <b>DE → ${langCode()}</b>
+            <span>übersetzen${store.typeAnswers ? " · tippen an" : ""}</span>
+          </button>
         </div>
         <div class="hero">
           <div class="hero-kicker">${esc(level.name)} · ${esc(level.subtitle)}</div>
@@ -376,16 +455,16 @@
         <div class="stats-row">
           <div class="stat"><b>${store.streak}</b><span>Tage Pensum</span></div>
           <div class="stat"><b>${today}</b><span>Heute</span></div>
-          <div class="stat"><b>${store.unlockedLevel}/4</b><span>Level offen</span></div>
+          <div class="stat"><b>${langUnlocked(store)}/4</b><span>Level offen</span></div>
         </div>
         <div class="grid-2">
           <button class="tile" data-act="start" data-mode="speak">
             <div class="emoji">🎙</div>
-            <div><h3>Nachsprechen</h3><p>Deutsch sehen, Spanisch sagen</p></div>
+            <div><h3>Nachsprechen</h3><p>Deutsch sehen, ${langOf(store).name} sagen</p></div>
           </button>
-          <button class="tile" data-act="start" data-mode="vocab">
+          <button class="tile" data-go="vocab-cats">
             <div class="emoji">Aa</div>
-            <div><h3>Vokabeln</h3><p>${dueCount("vocab")} in der Queue</p></div>
+            <div><h3>Vokabeln</h3><p>Listen, Kategorien, eigene Wörter</p></div>
           </button>
           <button class="tile" data-act="start" data-mode="chunk">
             <div class="emoji">❝</div>
@@ -416,8 +495,8 @@
           <div><h3>Tagespensum</h3><p>${dueCount("daily")} Karten · Streak nur bei Pensum</p></div>
         </button>
         <div class="grid-2">
-          <button class="tile" data-act="start" data-mode="speak"><h3>Nachsprechen</h3><p>Deutsch → Spanisch sagen</p></button>
-          <button class="tile" data-act="start" data-mode="vocab"><h3>Vokabeln</h3><p>${dueCount("vocab")}</p></button>
+          <button class="tile" data-act="start" data-mode="speak"><h3>Nachsprechen</h3><p>Deutsch → ${langOf(store).name} sagen</p></button>
+          <button class="tile" data-go="vocab-cats"><h3>Vokabeln</h3><p>Kategorien & Listen</p></button>
           <button class="tile" data-act="start" data-mode="chunk"><h3>Brocken</h3><p>${dueCount("chunk")}</p></button>
           <button class="tile" data-act="start" data-mode="sentence"><h3>Sätze</h3><p>${dueCount("sentence")}</p></button>
           <button class="tile" data-go="dialogs"><h3>Dialoge</h3><p>Zeilen durchgehen</p></button>
@@ -430,7 +509,7 @@
 
   function topicButton(t, locked) {
     const due = t.cards.filter((c) => {
-      const p = getProgress(store, c.id);
+      const p = getProgress(store, { id: c.id, sid: itemKey(store, { id: c.id, lang: store.lang }) });
       return p.new || isDue(p, Date.now());
     }).length;
     return `<button class="topic ${locked ? "locked" : ""} ${t.featured ? "featured" : ""}" data-topic="${t.id}" ${locked ? "disabled" : ""}>
@@ -442,11 +521,11 @@
   }
 
   function renderGrammar() {
-    const featured = GRAMMAR.filter((t) => t.featured);
+    const featured = activeGrammar(store).filter((t) => t.featured);
     const groups = [1, 2, 3, 4];
     const blocks = groups.map((lv) => {
-      const locked = lv > store.unlockedLevel;
-      const topics = GRAMMAR.filter((t) => t.lv === lv && !t.featured);
+      const locked = lv > langUnlocked(store);
+      const topics = activeGrammar(store).filter((t) => t.lv === lv && !t.featured);
       if (!topics.length) return "";
       return `
         <div class="section-title">Nivel ${lv}${locked ? " · noch gesperrt" : ""}</div>
@@ -464,7 +543,7 @@
   }
 
   function renderTopic() {
-    const topic = GRAMMAR.find((t) => t.id === ui.topicId);
+    const topic = activeGrammar(store).find((t) => t.id === ui.topicId);
     if (!topic) return renderGrammar();
     const slide = topic.lessons[ui.lessonIndex];
     const last = ui.lessonIndex === topic.lessons.length - 1;
@@ -506,10 +585,10 @@
             <div class="face">
               <span class="tag">${esc(POS_DE[item.pos] || item.pos)} · DE</span>
               <div class="word">${esc(item.de)}</div>
-              <p class="muted small">Sag das auf Spanisch. Tippen zeigt die Lösung.</p>
+              <p class="muted small">Sag das auf ${esc(langOf(store).name)}. Tippen zeigt die Lösung.</p>
             </div>
             <div class="face back">
-              <span class="tag">ES</span>
+              <span class="tag">${langCode()}</span>
               <div class="word">${esc(es)}</div>
               ${item.ex ? `<p class="example"><em>${esc(item.ex)}</em></p>` : ""}
               ${item.exde ? `<p class="example">${esc(item.exde)}</p>` : ""}
@@ -521,7 +600,8 @@
         ui.session.answered
           ? `<div class="feedback ${ui.session.chosen ? "ok" : "no"}">${esc(ui.session.listenNote || "")}</div>
              <button class="btn btn-primary" data-act="next">Weiter</button>`
-          : `${ui.session.listenNote ? `<p class="listen-note">${esc(ui.session.listenNote)}</p>` : ""}
+          : `${speechStatusCard()}
+             ${ui.session.listenNote ? `<p class="listen-note">${esc(ui.session.listenNote)}</p>` : ""}
              <button class="mic-btn ${ui.speechPhase === "recording" ? "rec-on" : ""}" data-act="listen-say">${speechBtnLabel()}</button>`
       }`;
     }
@@ -534,13 +614,13 @@
       <div class="prompt-card type-card">
         <span class="tag">${esc(POS_DE[item.pos] || item.pos)} · Nivel ${item.lv}</span>
         <div class="word" style="margin-top:10px">${esc(item.de)}</div>
-        <p class="muted small">Schreib die spanische Form${item.pos === "n" ? " mit Artikel" : ""}.</p>
+        <p class="muted small">Schreib die ${esc(langOf(store).name.toLowerCase())}e Form${item.pos === "n" ? " mit Artikel" : ""}.</p>
         ${
           ui.session.answered
             ? `<p class="card-de">${esc(es)}</p>
                <div class="feedback ${ui.session.chosen ? "ok" : "no"}">${esc(ui.session.typeResult || "")}</div>
                <button class="btn btn-primary" data-act="next">Weiter</button>`
-            : `<input class="type-input" data-type-input="1" type="text" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="español…" value="${esc(ui.session.typed || "")}" />
+            : `<input class="type-input" data-type-input="1" type="text" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="${store.lang === "it" ? "italiano…" : "español…"}" value="${esc(ui.session.typed || "")}" />
                <button class="btn btn-primary" data-act="type-submit" style="margin-top:10px">Prüfen</button>`
         }
       </div>`;
@@ -559,12 +639,12 @@
           <div class="stamp stamp-easy">Sitzt</div>
           <div class="flip-card ${ui.session.flipped ? "flipped" : ""}">
             <div class="face">
-              <span class="tag">${esc(POS_DE[item.pos] || item.pos)} · Nivel ${item.lv} · ${deFront ? "DE" : "ES"}</span>
+              <span class="tag">${esc(POS_DE[item.pos] || item.pos)} · Nivel ${item.lv} · ${deFront ? "DE" : langCode()}</span>
               <div class="word">${esc(front)}</div>
               <p class="muted small">Tippen zum Umdrehen</p>
             </div>
             <div class="face back">
-              <span class="tag">${deFront ? "ES" : "DE"}</span>
+              <span class="tag">${deFront ? langCode() : "DE"}</span>
               <div class="word">${esc(back)}</div>
               ${item.ex ? `<p class="example"><em>${esc(item.ex)}</em></p>` : ""}
               ${item.exde ? `<p class="example">${esc(item.exde)}</p>` : ""}
@@ -665,29 +745,31 @@
           <p>${s.correct} richtig · ${s.wrong} nochmal einplanen</p>
         </div>
         <p class="muted" style="text-align:center;margin:12px 0 18px">${s.mode === "daily" ? "Tagespensum zählt für den Streak." : "Falsche Karten kommen früher wieder."} Streak: ${store.streak} Tage.</p>
-        <button class="btn btn-primary" data-act="start" data-mode="${s.mode === "daily" ? "mixed" : s.mode}" data-topic="${s.topicId || ""}">Noch eine Runde</button>
+        <button class="btn btn-primary" data-act="start" data-mode="${s.mode === "daily" ? "mixed" : s.mode}" data-topic="${s.topicId || ""}" data-cat="${s.catId || ""}" data-pack="${s.packLevel || ""}">Noch eine Runde</button>
         <button class="btn btn-ghost" data-go="home" style="margin-top:10px">Zur Übersicht</button>
         ${nav("learn")}
       </div>`;
   }
 
   function renderStats() {
+    const prefix = (store.lang || "es") + ":";
     const weak = Object.entries(store.progress)
-      .map(([id, p]) => ({ id, p }))
+      .filter(([id]) => id.startsWith(prefix))
+      .map(([id, p]) => ({ id: id.slice(prefix.length), p }))
       .filter(({ p }) => p.wrong > p.correct && !p.new)
       .sort((a, b) => b.p.wrong - a.p.wrong)
       .slice(0, 8);
-    const lookup = [...VOCAB, ...CHUNKS, ...SENTENCES, ...GRAMMAR.flatMap((t) => t.cards), ...dialogCards(4)];
+    const lookup = [...allVocab(store), ...activeChunks(store), ...activeSentences(store), ...activeGrammar(store).flatMap((t) => t.cards), ...dialogCardsFor(store, 4)];
     const rows = weak.map(({ id }) => {
       const item = lookup.find((x) => x.id === id);
       if (!item) return "";
-      const left = item.es || item.prompt || item.text;
+      const left = (store.lang === "it" ? item.it : item.es) || item.es || item.prompt || item.text;
       const right = item.de || item.answer;
       return `<div class="row"><span class="es">${esc(left)}</span><span class="de">${esc(right)}</span></div>`;
     });
-    const nextLevel = LEVELS[store.unlockedLevel];
-    const cap = vocabForLevelCap(store.unlockedLevel);
-    const learned = learnedCount(store, store.unlockedLevel);
+    const nextLevel = LEVELS[langUnlocked(store)];
+    const cap = vocabForLevelCap(langUnlocked(store), store);
+    const learned = learnedCount(store, langUnlocked(store));
     return `
       <div class="screen">
         <div class="topbar"><h1>Fortschritt</h1></div>
@@ -700,7 +782,7 @@
           <div class="hero-kicker">Nächstes Level</div>
           <h2>${nextLevel ? nextLevel.subtitle : "Alle 500 Wörter offen"}</h2>
           <div class="progress"><span style="width:${Math.round((learned / cap.length) * 100)}%"></span></div>
-          <div class="hero-meta"><span>${learned} / ${cap.length} in Nivel ${store.unlockedLevel}</span><span>70% schalten frei</span></div>
+          <div class="hero-meta"><span>${learned} / ${cap.length} in Nivel ${langUnlocked(store)}</span><span>70% schalten frei</span></div>
         </div>
         <div class="section-title">Schwache Karten</div>
         <div class="list">${rows.filter(Boolean).join("") || `<div class="empty">Noch keine schwachen Karten – einfach drauflos.</div>`}</div>
@@ -716,10 +798,22 @@
           <h1>Einstellungen</h1>
         </div>
         <div class="settings-card">
+          <label class="setting">Sprache
+            <select class="select" data-act="lang">
+              <option value="es" ${store.lang === "es" ? "selected" : ""}>Spanisch</option>
+              <option value="it" ${store.lang === "it" ? "selected" : ""}>Italienisch</option>
+            </select>
+          </label>
           <label class="setting">Kartenrichtung
             <select class="select" data-act="direction">
-              <option value="es-de" ${store.direction === "es-de" ? "selected" : ""}>ES → DE (Wischen)</option>
-              <option value="de-es" ${store.direction === "de-es" ? "selected" : ""}>DE → ES (Tippen)</option>
+              <option value="es-de" ${store.direction === "es-de" ? "selected" : ""}>${langCode()} → DE</option>
+              <option value="de-es" ${store.direction === "de-es" ? "selected" : ""}>DE → ${langCode()}</option>
+            </select>
+          </label>
+          <label class="setting">Antwort eintippen
+            <select class="select" data-act="typing">
+              <option value="off" ${!store.typeAnswers ? "selected" : ""}>Aus (wischen)</option>
+              <option value="on" ${store.typeAnswers ? "selected" : ""}>An (nur DE → ${langCode()})</option>
             </select>
           </label>
           <label class="setting">Karten pro Runde
@@ -730,13 +824,13 @@
         </div>
         <button class="btn ${store.reminders ? "btn-primary" : "btn-ghost"}" data-act="reminders" style="margin-bottom:12px">${store.reminders ? "Erinnerungen an" : "Erinnerungen einschalten"}</button>
         ${ui.toast ? `<p class="muted small" style="margin-bottom:12px">${esc(ui.toast)}</p>` : ""}
-        <p class="muted small" style="margin-bottom:12px">Erinnerungen: App-Badge, wenn Karten fällig sind. Nachsprechen ist ein eigener Lernmodus auf der Startseite.</p>
+        <p class="muted small" style="margin-bottom:12px">Richtung und Sprache liegen auch auf der Startseite. Tippen ist optional. Nachsprechen bleibt ein eigener Modus.</p>
         <button class="btn btn-ghost danger" data-act="reset">Fortschritt löschen</button>
       </div>`;
   }
 
   function renderDialogs() {
-    const list = DIALOGS.filter((d) => d.lv <= store.unlockedLevel);
+    const list = activeDialogs(store).filter((d) => d.lv <= langUnlocked(store));
     return `
       <div class="screen">
         <div class="topbar"><h1>Dialoge</h1></div>
@@ -757,7 +851,7 @@
   }
 
   function renderDialogPlay() {
-    const d = DIALOGS.find((x) => x.id === ui.dialogId);
+    const d = activeDialogs(store).find((x) => x.id === ui.dialogId);
     if (!d) return renderDialogs();
     const line = d.lines[ui.dialogLine];
     const last = ui.dialogLine === d.lines.length - 1;
@@ -789,8 +883,92 @@
       </div>`;
   }
 
+  function renderVocabCats() {
+    const level = langUnlocked(store);
+    const freq = vocabForLevelCap(level, store);
+    const learned = learnedCount(store, level);
+    const packs = LEVELS.map((lv) => {
+      const locked = lv.id > level;
+      const words = vocabForLevelCap(lv.id, store);
+      return `<button class="topic ${locked ? "locked" : ""}" data-act="start-freq" data-level="${lv.id}" ${locked ? "disabled" : ""}>
+        <h3>${esc(lv.subtitle)}</h3>
+        <span class="lvl">${words.length} Wörter</span>
+        <p>${locked ? "Noch gesperrt" : "Dieselben IDs wie in den Kategorien – Fortschritt zählt überall."}</p>
+      </button>`;
+    }).join("");
+    const cats = VOCAB_CATS.filter((c) => c.id !== "custom").map((c) => {
+      const words = vocabByCategory(store, c.id).filter((v) => v.lv <= level || v.custom);
+      const due = words.filter((w) => {
+        const p = getProgress(store, tagItem(w));
+        return p.new || isDue(p, Date.now());
+      }).length;
+      return `<button class="topic" data-act="start-cat" data-cat="${c.id}">
+        <h3>${c.emoji} ${esc(c.name)}</h3>
+        <span class="lvl">${words.length}</span>
+        <p>${esc(c.hint)}</p>
+        <span class="muted small">${due} zu üben</span>
+      </button>`;
+    }).join("");
+    const own = vocabByCategory(store, "custom");
+    return `
+      <div class="screen">
+        <div class="topbar">
+          <button class="icon-btn" data-go="home">←</button>
+          <h1>Vokabeln</h1>
+        </div>
+        <p class="muted" style="margin-bottom:12px">In einer Kategorie gelerntes sitzt automatisch auch in „${esc(LEVELS[level - 1].subtitle)}“, wenn das Wort dort vorkommt.</p>
+        <div class="hero">
+          <div class="hero-kicker">${esc(langOf(store).name)} · ${esc(LEVELS[level - 1].name)}</div>
+          <h2>${learned} / ${freq.length} sitzen</h2>
+          <div class="progress"><span style="width:${Math.round((learned / Math.max(1, freq.length)) * 100)}%"></span></div>
+        </div>
+        <button class="btn btn-primary" data-go="add-word" style="margin-bottom:16px">Eigenes Wort eintragen</button>
+        <div class="section-title">Häufigste Wörter</div>
+        ${packs}
+        <div class="section-title">Kategorien</div>
+        ${cats}
+        <div class="section-title">Eigene Wörter</div>
+        <button class="topic" data-act="start-cat" data-cat="custom">
+          <h3>✦ Eigene Wörter</h3>
+          <span class="lvl">${own.length}</span>
+          <p>Was in der App fehlt, trägst du hier ein.</p>
+        </button>
+        ${nav("learn")}
+      </div>`;
+  }
+
+  function renderAddWord() {
+    const f = ui.addForm || { de: "", word: "", pos: "n" };
+    const L = langOf(store);
+    return `
+      <div class="screen">
+        <div class="topbar">
+          <button class="icon-btn" data-go="vocab-cats">←</button>
+          <h1>Wort eintragen</h1>
+        </div>
+        <p class="muted" style="margin-bottom:14px">Nur nötig, wenn der Eintrag in ${esc(L.name)} noch fehlt. Gibt es das Wort schon, nutzt die App den vorhandenen Fortschritt.</p>
+        <div class="settings-card add-card">
+          <label class="field">Deutsch
+            <input class="type-input" data-add="de" type="text" value="${esc(f.de)}" placeholder="das Brot" />
+          </label>
+          <label class="field">${esc(L.name)}
+            <input class="type-input" data-add="word" type="text" value="${esc(f.word)}" placeholder="${store.lang === "it" ? "il pane" : "el pan"}" />
+          </label>
+          <label class="setting">Wortart
+            <select class="select" data-add="pos">
+              ${[["n","Nomen"],["v","Verb"],["adj","Adjektiv"],["adv","Adverb"],["phr","Wendung"],["intj","Ausdruck"]].map(([k, lab]) => `<option value="${k}" ${f.pos === k ? "selected" : ""}>${lab}</option>`).join("")}
+            </select>
+          </label>
+        </div>
+        ${ui.toast ? `<p class="muted small" style="margin-bottom:12px">${esc(ui.toast)}</p>` : ""}
+        <button class="btn btn-primary" data-act="save-word">Speichern</button>
+        <button class="btn btn-ghost" data-go="vocab-cats" style="margin-top:10px">Abbrechen</button>
+      </div>`;
+  }
+
   function render() {
-    if (ui.view !== "home" && ui.view !== "settings") ui.toast = "";
+    if (ui.view !== "home" && ui.view !== "settings" && ui.view !== "add-word" && ui.view !== "vocab-cats") ui.toast = "";
+    document.body.dataset.lang = store.lang || "es";
     const map = {
       home: renderHome,
       learn: renderLearn,
@@ -802,7 +980,9 @@
       settings: renderSettings,
       dialogs: renderDialogs,
       "dialog-play": renderDialogPlay,
-      "speech-load": renderSpeechLoad
+      "speech-load": renderSpeechLoad,
+      "vocab-cats": renderVocabCats,
+      "add-word": renderAddWord
     };
     app.innerHTML = (map[ui.view] || renderHome)();
     afterRender();
@@ -830,20 +1010,73 @@
         </div>
         <div class="hero">
           <div class="hero-kicker">Whisper Small</div>
-          <h2 data-load-title>${err ? "Download fehlgeschlagen" : "Modell wird geladen"}</h2>
+          <h2 data-load-title>${err ? "Download fehlgeschlagen" : speechLoadTitle(p)}</h2>
           <div class="progress"><span data-load-bar style="width:${Math.max(2, p.pct || 0)}%"></span></div>
           <div class="hero-meta"><span data-load-label>${esc(p.label || "Bitte warten…")}</span><span data-load-pct>${p.pct || 0}%</span></div>
         </div>
-        <p class="muted" style="margin-top:16px">Einmalig ~240 MB. Danach bleibt Whisper auf dem Gerät. Vorne Deutsch, du sagst Spanisch.</p>
+        <div class="speech-steps">
+          ${speechSteps(p)}
+        </div>
+        <p class="muted" style="margin-top:16px">Einmalig ~240 MB. Danach bleibt Whisper auf dem Gerät. Vorne Deutsch, du sagst ${esc(langOf(store).name)}.</p>
         ${err ? `<button class="btn btn-primary" data-act="retry-speech-model" style="margin-top:16px">Nochmal laden</button>` : ""}
       </div>`;
   }
 
+  function speechLoadTitle(p) {
+    const phase = p?.phase || "";
+    if (phase === "library") return "Bibliothek wird geholt";
+    if (phase === "download") return "Modell wird geladen";
+    if (phase === "ready") return "Modell ist bereit";
+    return "Modell wird geladen";
+  }
+
+  function speechSteps(p) {
+    const phase = p?.phase || (p?.pct ? "download" : "library");
+    const steps = [
+      ["library", "Bibliothek anfragen"],
+      ["download", "Dateien laden / Cache"],
+      ["ready", "Modell bereit"]
+    ];
+    const order = steps.map((s) => s[0]);
+    const idx = Math.max(0, order.indexOf(phase));
+    return steps
+      .map((s, i) => {
+        const state = p?.error && i === idx ? "err" : i < idx ? "done" : i === idx ? "on" : "";
+        return `<div class="speech-step ${state}"><i></i><span>${s[1]}</span></div>`;
+      })
+      .join("");
+  }
+
+  function speechStatusCard() {
+    const p = ui.speechStatus || {};
+    const phase = ui.speechPhase;
+    if (phase === "idle" && !p.label) return "";
+    const titles = {
+      idle: "Bereit",
+      loading: "Bereite Whisper vor",
+      mic: "Frage Mikrofon an",
+      recording: "Hört zu",
+      busy: "Wertet Aufnahme aus"
+    };
+    const label =
+      p.label ||
+      (phase === "loading" ? "Lädt oder öffnet das Modell…" : phase === "mic" ? "Browser fragt Mikrofon-Erlaubnis…" : phase === "recording" ? "Sprich jetzt." : phase === "busy" ? "Erkenne mit Whisper…" : "");
+    return `<div class="speech-live" data-phase="${esc(phase)}">
+      <div class="speech-live-top">
+        <b>${titles[phase] || "Status"}</b>
+        <span>${phase === "loading" || p.phase === "download" ? (p.pct || 0) + "%" : ""}</span>
+      </div>
+      <p>${esc(label)}</p>
+      ${phase === "loading" || p.phase === "download" ? `<div class="progress"><span style="width:${Math.max(2, p.pct || 0)}%"></span></div>` : ""}
+    </div>`;
+  }
+
   function speechBtnLabel() {
     if (ui.speechPhase === "loading") return "Lädt Modell…";
+    if (ui.speechPhase === "mic") return "Frage Mikrofon an…";
     if (ui.speechPhase === "recording") return "Stopp · ich höre zu";
     if (ui.speechPhase === "busy") return "Erkenne…";
-    return "🎙 Spanisch sagen";
+    return "🎙 " + langOf(store).name + " sagen";
   }
 
   function setListenNote(msg) {
@@ -862,7 +1095,9 @@
     const title = app.querySelector("[data-load-title]");
     if (label) label.textContent = p.label || "Bitte warten…";
     if (num) num.textContent = pct + "%";
-    if (title) title.textContent = p.error ? "Download fehlgeschlagen" : "Modell wird geladen";
+    if (title) title.textContent = p.error ? "Download fehlgeschlagen" : speechLoadTitle(p);
+    const steps = app.querySelector(".speech-steps");
+    if (steps) steps.innerHTML = speechSteps(p);
     return true;
   }
 
@@ -872,7 +1107,7 @@
       return;
     }
     ui.view = "speech-load";
-    ui.modelProgress = { pct: 0, label: "Verbinde…" };
+    ui.modelProgress = { phase: "library", pct: 0, label: "Verbinde…" };
     render();
     try {
       await PalabraSpeech.ensure((p) => {
@@ -900,22 +1135,28 @@
     const probe = item && ui.view === "study" ? item : { es: target, pos: "phr" };
     try {
       await PalabraSpeech.toggle({
+        language: langOf(store).whisper,
         onProgress: (p) => {
+          ui.speechStatus = p;
           if (ui.view === "speech-load") {
             patchSpeechLoad(p);
             return;
           }
-          if (ui.speechPhase !== "loading") return;
-          const note = (p.label || "Lade Modell…") + (p.pct ? " " + p.pct + "%" : "");
+          const note = (p.label || "Lade Modell…") + (p.pct ? " · " + p.pct + "%" : "");
           setListenNote(note);
-          const el = app.querySelector(".listen-note");
-          if (el) el.textContent = note;
+          const live = app.querySelector(".speech-live p");
+          const bar = app.querySelector(".speech-live .progress > span");
+          const top = app.querySelector(".speech-live-top span");
+          if (live) live.textContent = p.label || note;
+          if (bar) bar.style.width = Math.max(2, p.pct || 0) + "%";
+          if (top && (p.pct || p.phase === "download")) top.textContent = (p.pct || 0) + "%";
         },
         onStatus: (phase) => {
           ui.speechPhase = phase;
-          if (phase === "loading") setListenNote("Whisper wird geladen…");
-          if (phase === "recording") setListenNote("Sprich jetzt auf Spanisch.");
-          if (phase === "busy") setListenNote("Erkenne mit Whisper…");
+          if (phase === "loading") setListenNote("Whisper wird geladen oder aus dem Cache geholt…");
+          if (phase === "mic") setListenNote("Frage Mikrofon an…");
+          if (phase === "recording") setListenNote("Sprich jetzt auf " + langOf(store).name + ".");
+          if (phase === "busy") setListenNote("Wandle um und erkenne mit Whisper…");
           render();
         },
         onResult: (text) => {
@@ -1053,12 +1294,35 @@
       startSession(mode === "topic" || topic ? "topic" : mode, {
         topicId: topic || ui.topicId,
         dialogId: dialog || null,
+        catId: t.dataset.cat || ui.catId,
+        packLevel: t.dataset.pack ? Number(t.dataset.pack) : null,
         forceAll: mode === "topic" || Boolean(topic) || Boolean(dialog)
       });
+    } else if (act === "set-lang") {
+      switchLang(t.dataset.lang);
+    } else if (act === "set-dir") {
+      store.direction = t.dataset.dir;
+      persist();
+      render();
+    } else if (act === "start-cat") {
+      ui.catId = t.dataset.cat;
+      const words = vocabItems(langUnlocked(store), ui.catId);
+      if (!words.length) {
+        ui.toast = ui.catId === "custom" ? "Noch keine eigenen Wörter – zuerst eines eintragen." : "In dieser Kategorie ist noch nichts freigeschaltet.";
+        ui.view = "vocab-cats";
+        render();
+        return;
+      }
+      startSession("vocab", { catId: ui.catId });
+    } else if (act === "start-freq") {
+      ui.catId = null;
+      startSession("vocab", { packLevel: Number(t.dataset.level) || langUnlocked(store) });
+    } else if (act === "save-word") {
+      saveCustomWord();
     } else if (act === "practice-topic") {
       startSession("topic", { topicId: ui.topicId, forceAll: true });
     } else if (act === "lesson-next") {
-      const topic = GRAMMAR.find((x) => x.id === ui.topicId);
+      const topic = activeGrammar(store).find((x) => x.id === ui.topicId);
       ui.lessonIndex = Math.min(topic.lessons.length - 1, ui.lessonIndex + 1);
       render();
     } else if (act === "lesson-prev") {
@@ -1164,15 +1428,32 @@
     if (t.dataset.act === "direction") {
       store.direction = t.value;
       persist();
+      render();
     }
     if (t.dataset.act === "size") {
       store.sessionSize = Number(t.value);
       persist();
     }
+    if (t.dataset.act === "typing") {
+      store.typeAnswers = t.value === "on";
+      persist();
+      render();
+    }
+    if (t.dataset.act === "lang") {
+      switchLang(t.value);
+    }
+    if (t.dataset.add === "pos") {
+      ui.addForm = ui.addForm || {};
+      ui.addForm.pos = t.value;
+    }
   });
 
   app.addEventListener("input", (e) => {
     if (e.target.classList.contains("type-input") && ui.session) ui.session.typed = e.target.value;
+    if (e.target.dataset.add && e.target.dataset.add !== "pos") {
+      ui.addForm = ui.addForm || { de: "", word: "", pos: "n" };
+      ui.addForm[e.target.dataset.add] = e.target.value;
+    }
   });
 
   document.addEventListener("visibilitychange", () => {

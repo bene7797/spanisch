@@ -33,24 +33,30 @@ const PalabraSpeech = (() => {
   function reportProgress(info, onProgress) {
     if (!onProgress || !info) return;
     const file = String(info.file || info.name || "").split("/").pop();
-    if (info.status === "initiate") {
-      onProgress({ pct: Object.keys(fileProg).length ? currentPct() : 1, label: "Starte Download…" + (file ? " " + file : "") });
+    const status = String(info.status || "");
+    if (status === "initiate") {
+      onProgress({
+        phase: "download",
+        pct: Object.keys(fileProg).length ? currentPct() : 1,
+        label: "Download startet" + (file ? ": " + file : "…")
+      });
       return;
     }
-    if (typeof info.loaded === "number" && typeof info.total === "number" && info.total > 0) {
-      fileProg[info.file || file || "file"] = { loaded: info.loaded, total: info.total };
+    if (status === "download" || status === "progress" || (typeof info.loaded === "number" && typeof info.total === "number" && info.total > 0)) {
+      fileProg[info.file || file || "file"] = { loaded: info.loaded || 0, total: info.total || 1 };
       const pct = currentPct();
-      onProgress({ pct, label: (file || "Whisper") + " · " + pct + "%" });
+      const mb = info.total ? Math.round((info.loaded || 0) / 1048576) + " / " + Math.round(info.total / 1048576) + " MB" : "";
+      onProgress({ phase: "download", pct, label: "Lädt " + (file || "Whisper") + (mb ? " · " + mb : " · " + pct + "%") });
       return;
     }
     if (typeof info.progress === "number") {
       const raw = info.progress <= 1 ? info.progress * 100 : info.progress;
       const pct = Math.max(currentPct(), Math.round(raw));
-      onProgress({ pct, label: info.status === "done" ? "Datei fertig…" : "Lade Whisper… " + pct + "%" });
+      onProgress({ phase: "download", pct, label: status === "done" ? "Datei gespeichert…" : "Lädt Whisper… " + pct + "%" });
       return;
     }
-    if (info.status === "done") onProgress({ pct: Math.max(currentPct(), 90), label: "Datei gespeichert…" });
-    if (info.status === "ready") onProgress({ pct: 100, label: "Modell ist bereit." });
+    if (status === "done") onProgress({ phase: "download", pct: Math.max(currentPct(), 90), label: "Datei im Cache gespeichert…" });
+    if (status === "ready") onProgress({ phase: "ready", pct: 100, label: "Modell ist bereit." });
   }
 
   function currentPct() {
@@ -84,11 +90,11 @@ const PalabraSpeech = (() => {
 
   async function ensure(onProgress) {
     if (pipe) {
-      onProgress?.({ pct: 100, label: "Modell ist bereit." });
+      onProgress?.({ phase: "ready", pct: 100, label: "Modell ist bereit." });
       return pipe;
     }
     if (loading) return loading;
-    onProgress?.({ pct: 0, label: "Lade Whisper-Bibliothek…" });
+    onProgress?.({ phase: "library", pct: 0, label: "Lade Whisper-Bibliothek…" });
     loading = (async () => {
       Object.keys(fileProg).forEach((k) => delete fileProg[k]);
       const mod = await import(SRC);
@@ -98,12 +104,12 @@ const PalabraSpeech = (() => {
         env.useBrowserCache = true;
         env.allowRemoteModels = true;
       }
-      onProgress?.({ pct: 5, label: "Lade Modelldateien (~240 MB)…" });
+      onProgress?.({ phase: "download", pct: 5, label: "Frage Modelldateien an (~240 MB)…" });
       pipe = await pipeline("automatic-speech-recognition", MODEL, {
         dtype: "q8",
         progress_callback: (info) => reportProgress(info, onProgress)
       });
-      onProgress?.({ pct: 100, label: "Modell ist bereit." });
+      onProgress?.({ phase: "ready", pct: 100, label: "Modell ist bereit." });
       return pipe;
     })();
     try {
@@ -140,11 +146,13 @@ const PalabraSpeech = (() => {
     stopTracks();
   }
 
-  async function transcribe(blob, onProgress) {
+  async function transcribe(blob, onProgress, language) {
     const p = await ensure(onProgress);
+    onProgress?.({ phase: "decode", pct: 100, label: "Wandle Aufnahme um…" });
     const audio = await blobToWave(blob);
+    onProgress?.({ phase: "transcribe", pct: 100, label: "Erkenne Sprache…" });
     const out = await p(audio, {
-      language: "spanish",
+      language: language || "spanish",
       task: "transcribe",
       return_timestamps: false
     });
@@ -159,7 +167,10 @@ const PalabraSpeech = (() => {
       throw new Error("Aufnahme klappt hier nicht. Chrome oder Safari aktuell nutzen.");
     }
     handlers.onStatus?.("loading");
+    handlers.onProgress?.({ phase: "library", pct: pipe ? 100 : 0, label: pipe ? "Modell ist bereit." : "Bereite Whisper vor…" });
     await ensure(handlers.onProgress);
+    handlers.onStatus?.("mic");
+    handlers.onProgress?.({ phase: "mic", pct: 100, label: "Frage Mikrofon an…" });
     stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 }
     });
@@ -187,7 +198,7 @@ const PalabraSpeech = (() => {
       }
       handlers.onStatus?.("busy");
       try {
-        const text = await transcribe(blob, handlers.onProgress);
+        const text = await transcribe(blob, handlers.onProgress, handlers.language);
         handlers.onResult?.(text);
       } catch (err) {
         handlers.onError?.(err);

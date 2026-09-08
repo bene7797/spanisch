@@ -1,7 +1,7 @@
 {
-  "name": "Palabra – Spanisch lernen",
+  "name": "Palabra – Spanisch & Italienisch",
   "short_name": "Palabra",
-  "description": "Karteikarten, Grammatik und Sätze – offline auf dem Home-Bildschirm.",
+  "description": "Karteikarten, Grammatik und Sätze für Spanisch und Italienisch – offline auf dem Home-Bildschirm.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

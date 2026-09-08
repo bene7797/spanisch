@@ -1,5 +1,12 @@
+function itemLang(item) {
+  return item?.lang || "es";
+}
+
 function stripArticle(es) {
-  return String(es || "").replace(/^(el|la|los|las)\s+/i, "").trim();
+  return String(es || "")
+    .replace(/^(el|la|los|las|il|lo|la|i|gli|le|l'|un|una|uno|un')\s+/i, "")
+    .replace(/^l'/i, "")
+    .trim();
 }
 
 function nounLemma(item) {
@@ -19,7 +26,8 @@ function guessGenderFromLemma(w) {
 function withArticle(item) {
   if (!item || item.pos !== "n") return item?.es || "";
   const es = item.es.trim();
-  if (/^(el|la|los|las)\s+/i.test(es)) return es;
+  if (/^(el|la|los|las|il|lo|i|gli|le)\s+/i.test(es) || /^l'/i.test(es)) return es;
+  if (itemLang(item) === "it") return es;
   const days = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"];
   const months = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
   if (days.includes(es)) return "el " + es;
@@ -172,8 +180,62 @@ function verbInfinitive(item) {
   return "";
 }
 
+const IT_IRREG = {
+  essere: { io: "sono", tu: "sei", lui: "è", noi: "siamo", voi: "siete", loro: "sono" },
+  avere: { io: "ho", tu: "hai", lui: "ha", noi: "abbiamo", voi: "avete", loro: "hanno" },
+  stare: { io: "sto", tu: "stai", lui: "sta", noi: "stiamo", voi: "state", loro: "stanno" },
+  fare: { io: "faccio", tu: "fai", lui: "fa", noi: "facciamo", voi: "fate", loro: "fanno" },
+  andare: { io: "vado", tu: "vai", lui: "va", noi: "andiamo", voi: "andate", loro: "vanno" },
+  dare: { io: "do", tu: "dai", lui: "dà", noi: "diamo", voi: "date", loro: "danno" },
+  dire: { io: "dico", tu: "dici", lui: "dice", noi: "diciamo", voi: "dite", loro: "dicono" },
+  venire: { io: "vengo", tu: "vieni", lui: "viene", noi: "veniamo", voi: "venite", loro: "vengono" },
+  uscire: { io: "esco", tu: "esci", lui: "esce", noi: "usciamo", voi: "uscite", loro: "escono" },
+  potere: { io: "posso", tu: "puoi", lui: "può", noi: "possiamo", voi: "potete", loro: "possono" },
+  volere: { io: "voglio", tu: "vuoi", lui: "vuole", noi: "vogliamo", voi: "volete", loro: "vogliono" },
+  dovere: { io: "devo", tu: "devi", lui: "deve", noi: "dobbiamo", voi: "dovete", loro: "devono" },
+  sapere: { io: "so", tu: "sai", lui: "sa", noi: "sappiamo", voi: "sapete", loro: "sanno" },
+  vedere: { io: "vedo", tu: "vedi", lui: "vede", noi: "vediamo", voi: "vedete", loro: "vedono" },
+  bere: { io: "bevo", tu: "bevi", lui: "beve", noi: "beviamo", voi: "bevete", loro: "bevono" },
+  rimanere: { io: "rimango", tu: "rimani", lui: "rimane", noi: "rimaniamo", voi: "rimanete", loro: "rimangono" },
+  tenere: { io: "tengo", tu: "tieni", lui: "tiene", noi: "teniamo", voi: "tenete", loro: "tengono" },
+  salire: { io: "salgo", tu: "sali", lui: "sale", noi: "saliamo", voi: "salite", loro: "salgono" },
+  scegliere: { io: "scelgo", tu: "scegli", lui: "sceglie", noi: "scegliamo", voi: "scegliete", loro: "scelgono" },
+  tradurre: { io: "traduco", tu: "traduci", lui: "traduce", noi: "traduciamo", voi: "traducete", loro: "traducono" },
+  piacere: { io: "piaccio", tu: "piaci", lui: "piace", noi: "piacciamo", voi: "piacete", loro: "piacciono" }
+};
+
+const IT_ISC = ["capire", "finire", "preferire", "pulire", "costruire", "spedire"];
+const IT_PERS = ["io", "tu", "lui/lei", "noi", "voi", "loro"];
+const IT_KEYS = ["io", "tu", "lui", "noi", "voi", "loro"];
+
+function italianPresent(inf) {
+  const raw = String(inf || "").replace(/^l'/, "");
+  if (IT_IRREG[raw]) return IT_IRREG[raw];
+  let stem;
+  let set;
+  if (IT_ISC.includes(raw) && raw.endsWith("ire")) {
+    stem = raw.slice(0, -3);
+    set = ["isco", "isci", "isce", "iamo", "ite", "iscono"];
+  } else if (raw.endsWith("are")) {
+    stem = raw.slice(0, -3);
+    set = ["o", "i", "a", "iamo", "ate", "ano"];
+  } else if (raw.endsWith("ere")) {
+    stem = raw.slice(0, -3);
+    set = ["o", "i", "e", "iamo", "ete", "ono"];
+  } else if (raw.endsWith("ire")) {
+    stem = raw.slice(0, -3);
+    set = ["o", "i", "e", "iamo", "ite", "ono"];
+  } else return null;
+  const out = {};
+  IT_KEYS.forEach((k, i) => {
+    out[k] = stem + set[i];
+  });
+  return out;
+}
+
 function getWordForms(item) {
   if (!item) return null;
+  if (itemLang(item) === "it") return getItalianForms(item);
   if (item.pos === "v") {
     const inf = verbInfinitive(item);
     const forms = presentOf(inf === "haber" && item.es === "hay" ? "haber" : inf);
@@ -201,6 +263,41 @@ function getWordForms(item) {
         ["f. Plural", f.fp]
       ]
     };
+  }
+  return null;
+}
+
+function italianArticleRows(item) {
+  const sg = withArticle(item);
+  return { title: "Artikel", rows: [["Form", sg]] };
+}
+
+function getItalianForms(item) {
+  if (item.pos === "v") {
+    const inf = item.es.split(" / ")[0].split(" ")[0];
+    if (inf === "c'è" || inf === "ci") {
+      return { title: "c'è / ci sono", rows: [["Singular", "c'è"], ["Plural", "ci sono"]] };
+    }
+    const forms = italianPresent(inf);
+    if (!forms) return null;
+    return { title: inf + " · Presente", rows: IT_PERS.map((label, i) => [label, forms[IT_KEYS[i]]]) };
+  }
+  if (item.pos === "n") return italianArticleRows(item);
+  if (item.pos === "adj") {
+    const w = item.es;
+    if (w.endsWith("o")) {
+      const stem = w.slice(0, -1);
+      return {
+        title: "Angleichung",
+        rows: [
+          ["m. Singular", stem + "o"],
+          ["f. Singular", stem + "a"],
+          ["m. Plural", stem + "i"],
+          ["f. Plural", stem + "e"]
+        ]
+      };
+    }
+    return { title: "Angleichung", rows: [["Grundform", w], ["Plural oft", w.endsWith("e") ? w.slice(0, -1) + "i" : w]] };
   }
   return null;
 }

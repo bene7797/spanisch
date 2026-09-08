@@ -1,4 +1,4 @@
-const CACHE = "palabra-v10";
+const CACHE = "palabra-v11";
 const ASSETS = [
   "./",
   "./index.html",
@@ -9,9 +9,15 @@ const ASSETS = [
   "./js/data-sentences.js",
   "./js/data-chunks.js",
   "./js/data-dialogs.js",
+  "./js/data-cats.js",
+  "./js/data-vocab-it.js",
+  "./js/data-vocab-extra.js",
+  "./js/data-it-lessons.js",
+  "./js/lang.js",
   "./js/forms.js",
   "./js/srs.js",
   "./js/storage.js",
+  "./js/content.js",
   "./js/speech.js",
   "./js/app.js",
   "./icons/icon-192.png",
