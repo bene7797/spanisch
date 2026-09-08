@@ -1,0 +1,26 @@
+{
+  "name": "Palabra – Spanisch lernen",
+  "short_name": "Palabra",
+  "description": "Karteikarten, Grammatik und Sätze – offline auf dem Home-Bildschirm.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4ece3",
+  "theme_color": "#9a3412",
+  "lang": "de",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
