@@ -469,8 +469,7 @@
     const deFront = store.direction === "de-es";
     const forms = getWordForms(item);
     const tools = `
-      ${forms ? `<div class="card-tools"><button class="tool-btn" data-act="toggle-forms">Alle Formen</button></div>` : ""}
-      ${ui.session.showForms && forms ? renderFormsBox(forms) : ""}`;
+      ${forms ? `<div class="card-tools"><button class="tool-btn" data-act="toggle-forms">Alle Formen</button></div>` : ""}`;
     if (typing) {
       return `
       <button class="speak-bar" data-act="speak" data-say="${esc(es)}">
@@ -527,10 +526,15 @@
       </div>`;
   }
 
-  function renderFormsBox(forms) {
-    return `<div class="forms-box">
-      <div class="tag">${esc(forms.title)}</div>
-      <table class="table">${forms.rows.map((r) => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td></tr>`).join("")}</table>
+  function renderFormsModal(forms) {
+    return `<div class="forms-modal" data-act="close-forms">
+      <div class="forms-sheet" data-act="forms-noop">
+        <div class="forms-sheet-head">
+          <div class="tag">${esc(forms.title)}</div>
+          <button class="icon-btn" data-act="close-forms" aria-label="Schließen">×</button>
+        </div>
+        <table class="table">${forms.rows.map((r) => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td></tr>`).join("")}</table>
+      </div>
     </div>`;
   }
 
@@ -581,6 +585,7 @@
     const s = ui.session;
     const pct = Math.round((s.index / s.queue.length) * 100);
     const labels = { vocab: "Vokabeln", grammar: "Grammatik", sentence: "Sätze", mixed: "Gemischt", topic: "Thema", chunk: "Brocken", daily: "Pensum", dialog: "Dialog" };
+    const forms = isCardItem(item) ? getWordForms(item) : null;
     return `
       <div class="screen no-nav ${isCardItem(item) ? "study-vocab" : ""}">
         <div class="session-top">
@@ -590,7 +595,8 @@
         </div>
         <div class="thin-progress"><span style="width:${pct}%"></span></div>
         ${isCardItem(item) ? renderVocabCard(item) : renderChoice(item)}
-      </div>`;
+      </div>
+      ${s.showForms && forms ? renderFormsModal(forms) : ""}`;
   }
 
   function renderResult() {
@@ -827,7 +833,8 @@
   app.addEventListener("pointerdown", (e) => {
     if (e.button) return;
     if (ui.view !== "study" || swipeLock) return;
-    if (e.target.closest("[data-act='speak'], [data-act='abort'], [data-act='toggle-forms'], [data-act='type-submit'], .icon-btn, .type-input, .card-tools, .forms-box")) return;
+    if (ui.session?.showForms) return;
+    if (e.target.closest("[data-act='speak'], [data-act='abort'], [data-act='toggle-forms'], [data-act='type-submit'], .icon-btn, .type-input, .card-tools, .forms-modal")) return;
     const wrap = e.target.closest(".swipe-wrap");
     if (!wrap || !isCardItem(currentItem()) || shouldType(currentItem())) return;
     e.preventDefault();
@@ -890,6 +897,12 @@
       if (!ui.session) return;
       ui.session.showForms = !ui.session.showForms;
       render();
+    } else if (act === "close-forms") {
+      if (!ui.session) return;
+      ui.session.showForms = false;
+      render();
+    } else if (act === "forms-noop") {
+      return;
     } else if (act === "open-dialog") {
       ui.dialogId = t.dataset.dialog;
       ui.dialogLine = 0;
@@ -968,6 +981,12 @@
       updateBadge();
       notifyDue(false);
     }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !ui.session?.showForms) return;
+    ui.session.showForms = false;
+    render();
   });
 
   window.addEventListener("beforeinstallprompt", (e) => {
