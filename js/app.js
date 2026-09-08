@@ -12,7 +12,8 @@
     dialogId: null,
     dialogLine: 0,
     dialogShowDe: false,
-    toast: ""
+    toast: "",
+    formsLockUntil: 0
   };
 
   let drag = null;
@@ -467,9 +468,6 @@
     const typing = shouldType(item);
     const es = displayEs(item);
     const deFront = store.direction === "de-es";
-    const forms = getWordForms(item);
-    const tools = `
-      ${forms ? `<div class="card-tools"><button class="tool-btn" data-act="toggle-forms">Alle Formen</button></div>` : ""}`;
     if (typing) {
       return `
       <button class="speak-bar" data-act="speak" data-say="${esc(es)}">
@@ -488,8 +486,7 @@
             : `<input class="type-input" data-type-input="1" type="text" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="español…" value="${esc(ui.session.typed || "")}" />
                <button class="btn btn-primary" data-act="type-submit" style="margin-top:10px">Prüfen</button>`
         }
-      </div>
-      ${tools}`;
+      </div>`;
     }
     const front = deFront ? item.de : es;
     const back = deFront ? es : item.de;
@@ -518,7 +515,6 @@
           </div>
         </div>
       </div>
-      ${tools}
       <div class="swipe-hint">
         <span class="no">← falsch</span>
         <span class="easy">↑ sitzt</span>
@@ -591,6 +587,7 @@
         <div class="session-top">
           <button class="icon-btn" data-act="abort">×</button>
           <span class="chip">${labels[s.mode] || "Runde"}</span>
+          ${forms ? `<button class="tool-btn forms-open" data-act="toggle-forms">Alle Formen</button>` : ""}
           <span class="session-count">${s.index + 1} / ${s.queue.length}</span>
         </div>
         <div class="thin-progress"><span style="width:${pct}%"></span></div>
@@ -893,12 +890,15 @@
     } else if (act === "type-submit") {
       submitTyped();
     } else if (act === "toggle-forms") {
+      e.preventDefault();
       e.stopPropagation();
       if (!ui.session) return;
       ui.session.showForms = !ui.session.showForms;
+      if (ui.session.showForms) ui.formsLockUntil = Date.now() + 500;
       render();
     } else if (act === "close-forms") {
       if (!ui.session) return;
+      if (Date.now() < ui.formsLockUntil) return;
       ui.session.showForms = false;
       render();
     } else if (act === "forms-noop") {

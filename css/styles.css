@@ -450,8 +450,9 @@ a { color: inherit; }
 .session-top {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 8px;
+  flex-wrap: wrap;
 }
 .session-count { font-weight: 600; font-size: 14px; margin-left: auto; }
 .thin-progress {
@@ -724,24 +725,25 @@ a { color: inherit; }
   cursor: pointer;
 }
 .forms-modal {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  z-index: 40;
-  background: rgba(28, 20, 16, 0.46);
+  z-index: 80;
+  background: rgba(28, 20, 16, 0.5);
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: center;
-  padding: 16px 16px calc(16px + var(--safe-bottom));
+  padding: 20px 16px calc(20px + var(--safe-bottom));
 }
 .forms-sheet {
   width: 100%;
-  max-height: min(78dvh, 640px);
+  max-width: 420px;
+  max-height: min(80dvh, 640px);
   overflow: auto;
   -webkit-overflow-scrolling: touch;
   background: var(--paper);
-  border-radius: 24px 24px 20px 20px;
+  border-radius: 24px;
   padding: 16px 18px 22px;
-  box-shadow: 0 18px 50px rgba(28, 20, 16, 0.22);
+  box-shadow: 0 18px 50px rgba(28, 20, 16, 0.28);
 }
 .forms-sheet-head {
   display: flex;
@@ -760,9 +762,11 @@ a { color: inherit; }
   font-weight: 650;
   text-align: right;
 }
-@media (min-width: 700px) {
-  .forms-modal { align-items: center; }
-  .forms-sheet { border-radius: 24px; max-width: 420px; }
+.tool-btn.forms-open {
+  background: var(--terracotta);
+  color: #fffaf3;
+  padding: 7px 12px;
+  font-size: 12px;
 }
 
 @media (min-width: 900px) {
