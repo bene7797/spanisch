@@ -829,12 +829,12 @@
           <h1>Nachsprechen</h1>
         </div>
         <div class="hero">
-          <div class="hero-kicker">Whisper</div>
-          <h2>${err ? "Download fehlgeschlagen" : "Modell wird geladen"}</h2>
-          <div class="progress"><span style="width:${Math.max(2, p.pct || 0)}%"></span></div>
-          <div class="hero-meta"><span>${esc(p.label || "Bitte warten…")}</span><span>${p.pct || 0}%</span></div>
+          <div class="hero-kicker">Whisper Small</div>
+          <h2 data-load-title>${err ? "Download fehlgeschlagen" : "Modell wird geladen"}</h2>
+          <div class="progress"><span data-load-bar style="width:${Math.max(2, p.pct || 0)}%"></span></div>
+          <div class="hero-meta"><span data-load-label>${esc(p.label || "Bitte warten…")}</span><span data-load-pct>${p.pct || 0}%</span></div>
         </div>
-        <p class="muted" style="margin-top:16px">Einmalig ~75 MB. Danach bleibt Whisper auf dem Gerät und du siehst Deutsch, sagst Spanisch.</p>
+        <p class="muted" style="margin-top:16px">Einmalig ~240 MB. Danach bleibt Whisper auf dem Gerät. Vorne Deutsch, du sagst Spanisch.</p>
         ${err ? `<button class="btn btn-primary" data-act="retry-speech-model" style="margin-top:16px">Nochmal laden</button>` : ""}
       </div>`;
   }
@@ -851,6 +851,21 @@
     else if (ui.session) ui.session.listenNote = msg;
   }
 
+  function patchSpeechLoad(p) {
+    ui.modelProgress = p;
+    const bar = app.querySelector("[data-load-bar]");
+    if (!bar || ui.view !== "speech-load") return false;
+    const pct = Math.max(0, Math.min(100, p.pct || 0));
+    bar.style.width = Math.max(2, pct) + "%";
+    const label = app.querySelector("[data-load-label]");
+    const num = app.querySelector("[data-load-pct]");
+    const title = app.querySelector("[data-load-title]");
+    if (label) label.textContent = p.label || "Bitte warten…";
+    if (num) num.textContent = pct + "%";
+    if (title) title.textContent = p.error ? "Download fehlgeschlagen" : "Modell wird geladen";
+    return true;
+  }
+
   async function startSpeakMode() {
     if (PalabraSpeech.isReady()) {
       startSession("speak");
@@ -859,17 +874,12 @@
     ui.view = "speech-load";
     ui.modelProgress = { pct: 0, label: "Verbinde…" };
     render();
-    let last = -1;
-    let lastAt = 0;
     try {
       await PalabraSpeech.ensure((p) => {
-        const now = Date.now();
-        if (p.pct === last && now - lastAt < 250) return;
-        last = p.pct;
-        lastAt = now;
-        ui.modelProgress = p;
-        ui.view = "speech-load";
-        render();
+        if (!patchSpeechLoad(p)) {
+          ui.view = "speech-load";
+          render();
+        }
       });
       startSession("speak");
     } catch (err) {
@@ -891,10 +901,15 @@
     try {
       await PalabraSpeech.toggle({
         onProgress: (p) => {
-          if (ui.view === "speech-load") return;
+          if (ui.view === "speech-load") {
+            patchSpeechLoad(p);
+            return;
+          }
           if (ui.speechPhase !== "loading") return;
-          setListenNote((p.label || "Lade Modell…") + (p.pct ? " " + p.pct + "%" : ""));
-          if (p.pct === 100 || p.pct % 10 === 0) render();
+          const note = (p.label || "Lade Modell…") + (p.pct ? " " + p.pct + "%" : "");
+          setListenNote(note);
+          const el = app.querySelector(".listen-note");
+          if (el) el.textContent = note;
         },
         onStatus: (phase) => {
           ui.speechPhase = phase;

@@ -1,5 +1,5 @@
 const PalabraSpeech = (() => {
-  const MODEL = "Xenova/whisper-base";
+  const MODEL = "Xenova/whisper-small";
   const SRC = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2/+esm";
   let pipe = null;
   let loading = null;
@@ -90,6 +90,7 @@ const PalabraSpeech = (() => {
     if (loading) return loading;
     onProgress?.({ pct: 0, label: "Lade Whisper-Bibliothek…" });
     loading = (async () => {
+      Object.keys(fileProg).forEach((k) => delete fileProg[k]);
       const mod = await import(SRC);
       const { pipeline, env } = mod;
       if (env) {
@@ -97,7 +98,7 @@ const PalabraSpeech = (() => {
         env.useBrowserCache = true;
         env.allowRemoteModels = true;
       }
-      onProgress?.({ pct: 5, label: "Lade Modelldateien (~75 MB)…" });
+      onProgress?.({ pct: 5, label: "Lade Modelldateien (~240 MB)…" });
       pipe = await pipeline("automatic-speech-recognition", MODEL, {
         dtype: "q8",
         progress_callback: (info) => reportProgress(info, onProgress)
