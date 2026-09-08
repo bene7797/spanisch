@@ -7,7 +7,10 @@ const PalabraSpeech = (() => {
   let chunks = [];
   let stream = null;
   let timer = null;
+  let busyTimer = null;
   let recording = false;
+  let runId = 0;
+  let aborted = false;
   const fileProg = {};
 
   function pickMime() {
@@ -103,6 +106,9 @@ const PalabraSpeech = (() => {
         env.allowLocalModels = false;
         env.useBrowserCache = true;
         env.allowRemoteModels = true;
+        if (env.backends?.onnx?.wasm) {
+          env.backends.onnx.wasm.proxy = true;
+        }
       }
       onProgress?.({ phase: "download", pct: 5, label: "Frage Modelldateien an (~240 MB)…" });
       pipe = await pipeline("automatic-speech-recognition", MODEL, {
@@ -136,26 +142,45 @@ const PalabraSpeech = (() => {
     return recording;
   }
 
+  function clearBusyTimer() {
+    if (busyTimer) {
+      clearTimeout(busyTimer);
+      busyTimer = null;
+    }
+  }
+
   function cancel() {
+    aborted = true;
+    runId += 1;
     recording = false;
-    try {
-      if (rec && rec.state !== "inactive") rec.stop();
-    } catch {}
+    clearBusyTimer();
+    const current = rec;
     rec = null;
     chunks = [];
+    if (current) {
+      current.ondataavailable = null;
+      current.onerror = null;
+      current.onstop = () => stopTracks();
+      try {
+        if (current.state !== "inactive") current.stop();
+      } catch {}
+    }
     stopTracks();
   }
 
-  async function transcribe(blob, onProgress, language) {
+  async function transcribe(blob, onProgress, language, id) {
     const p = await ensure(onProgress);
+    if (aborted || id !== runId) throw new Error("Abgebrochen.");
     onProgress?.({ phase: "decode", pct: 100, label: "Wandle Aufnahme um…" });
     const audio = await blobToWave(blob);
+    if (aborted || id !== runId) throw new Error("Abgebrochen.");
     onProgress?.({ phase: "transcribe", pct: 100, label: "Erkenne Sprache…" });
     const out = await p(audio, {
       language: language || "spanish",
       task: "transcribe",
       return_timestamps: false
     });
+    if (aborted || id !== runId) throw new Error("Abgebrochen.");
     return String(out?.text || "").trim();
   }
 
@@ -166,14 +191,21 @@ const PalabraSpeech = (() => {
     if (!window.MediaRecorder) {
       throw new Error("Aufnahme klappt hier nicht. Chrome oder Safari aktuell nutzen.");
     }
+    aborted = false;
+    const id = ++runId;
     handlers.onStatus?.("loading");
     handlers.onProgress?.({ phase: "library", pct: pipe ? 100 : 0, label: pipe ? "Modell ist bereit." : "Bereite Whisper vor…" });
     await ensure(handlers.onProgress);
+    if (aborted || id !== runId) throw new Error("Abgebrochen.");
     handlers.onStatus?.("mic");
     handlers.onProgress?.({ phase: "mic", pct: 100, label: "Frage Mikrofon an…" });
     stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 }
     });
+    if (aborted || id !== runId) {
+      stopTracks();
+      throw new Error("Abgebrochen.");
+    }
     chunks = [];
     const mime = pickMime();
     rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
@@ -192,16 +224,27 @@ const PalabraSpeech = (() => {
       stopTracks();
       const blob = new Blob(chunks, { type: mimeType });
       chunks = [];
+      if (aborted || id !== runId) return;
       if (!blob.size) {
         handlers.onError?.(new Error("Nichts aufgenommen."));
         return;
       }
       handlers.onStatus?.("busy");
+      clearBusyTimer();
+      busyTimer = setTimeout(() => {
+        if (id !== runId) return;
+        cancel();
+        handlers.onError?.(new Error("Erkennung hängt. Abgebrochen – nochmal versuchen oder die Runde beenden."));
+      }, 20000);
       try {
-        const text = await transcribe(blob, handlers.onProgress, handlers.language);
+        const text = await transcribe(blob, handlers.onProgress, handlers.language, id);
+        if (aborted || id !== runId) return;
         handlers.onResult?.(text);
       } catch (err) {
+        if (aborted || id !== runId) return;
         handlers.onError?.(err);
+      } finally {
+        if (id === runId) clearBusyTimer();
       }
     };
     recording = true;

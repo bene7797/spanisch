@@ -16,6 +16,7 @@
     formsLockUntil: 0,
     listenNote: "",
     speechPhase: "idle",
+    speakLoadGen: 0,
     speechStatus: { phase: "idle", pct: 0, label: "" },
     modelProgress: { pct: 0, label: "" },
     catId: null,
@@ -24,6 +25,7 @@
 
   let drag = null;
   let swipeLock = false;
+  let lastPaint = { view: "", card: "" };
 
   function el(html) {
     return html;
@@ -250,7 +252,7 @@
       const insertAt = Math.min(q.length, ui.session.index + 3);
       q.splice(insertAt, 0, item);
     }
-    if (!opts.silent) render();
+    if (!opts.silent && !patchStudyAnswer()) render();
   }
 
   function nextCard() {
@@ -458,10 +460,6 @@
           <div class="stat"><b>${langUnlocked(store)}/4</b><span>Level offen</span></div>
         </div>
         <div class="grid-2">
-          <button class="tile" data-act="start" data-mode="speak">
-            <div class="emoji">🎙</div>
-            <div><h3>Nachsprechen</h3><p>Deutsch sehen, ${langOf(store).name} sagen</p></div>
-          </button>
           <button class="tile" data-go="vocab-cats">
             <div class="emoji">Aa</div>
             <div><h3>Vokabeln</h3><p>Listen, Kategorien, eigene Wörter</p></div>
@@ -481,6 +479,10 @@
         </div>
         ${installBanner()}
         ${ui.toast ? `<p class="muted small" style="margin-top:12px">${esc(ui.toast)}</p>` : ""}
+        <button class="tile tile-wide" data-act="start" data-mode="speak">
+          <div class="emoji">🎙</div>
+          <div><h3>Nachsprechen</h3><p>Deutsch sehen, ${langOf(store).name} sagen</p></div>
+        </button>
         ${nav("home")}
       </div>`;
   }
@@ -495,7 +497,6 @@
           <div><h3>Tagespensum</h3><p>${dueCount("daily")} Karten · Streak nur bei Pensum</p></div>
         </button>
         <div class="grid-2">
-          <button class="tile" data-act="start" data-mode="speak"><h3>Nachsprechen</h3><p>Deutsch → ${langOf(store).name} sagen</p></button>
           <button class="tile" data-go="vocab-cats"><h3>Vokabeln</h3><p>Kategorien & Listen</p></button>
           <button class="tile" data-act="start" data-mode="chunk"><h3>Brocken</h3><p>${dueCount("chunk")}</p></button>
           <button class="tile" data-act="start" data-mode="sentence"><h3>Sätze</h3><p>${dueCount("sentence")}</p></button>
@@ -503,6 +504,10 @@
           <button class="tile" data-act="start" data-mode="grammar"><h3>Grammatik</h3><p>${dueCount("grammar")}</p></button>
           <button class="tile" data-act="start" data-mode="mixed"><h3>Gemischt</h3><p>${dueCount("mixed")}</p></button>
         </div>
+        <button class="tile tile-wide" data-act="start" data-mode="speak">
+          <div class="emoji">🎙</div>
+          <div><h3>Nachsprechen</h3><p>Deutsch → ${langOf(store).name} sagen</p></div>
+        </button>
         ${nav("learn")}
       </div>`;
   }
@@ -602,7 +607,13 @@
              <button class="btn btn-primary" data-act="next">Weiter</button>`
           : `${speechStatusCard()}
              ${ui.session.listenNote ? `<p class="listen-note">${esc(ui.session.listenNote)}</p>` : ""}
-             <button class="mic-btn ${ui.speechPhase === "recording" ? "rec-on" : ""}" data-act="listen-say">${speechBtnLabel()}</button>`
+             <button class="mic-btn ${ui.speechPhase === "recording" ? "rec-on" : ""} ${ui.speechPhase === "busy" ? "busy-on" : ""}" data-act="listen-say">${speechBtnLabel()}</button>
+             ${
+               ui.speechPhase !== "idle"
+                 ? `<button class="btn btn-ghost" data-act="cancel-listen" style="margin-top:10px">Erkennung abbrechen</button>`
+                 : ""
+             }
+             <button class="btn btn-ghost danger" data-act="abort" style="margin-top:8px">Runde beenden</button>`
       }`;
     }
     if (typing) {
@@ -671,45 +682,145 @@
     </div>`;
   }
 
-  function renderChoice(item) {
-    const isSentence = item.type === "sentence";
-    const prompt = isSentence
-      ? item.text.replace("___", `<span class="blank">${ui.session.answered ? esc(item.answer) : ""}</span>`)
-      : esc(item.prompt);
-    const options = ui.session.options || item.options;
-    const chosenWrong = ui.session.answered && ui.session.chosen === 0;
-    const showDe = Boolean(item.de) && (ui.session.showTrans || ui.session.answered);
+  function choiceTag(item) {
+    if (item.topicTitle) return esc(item.topicTitle);
+    if (item.dialogTitle) return esc(item.dialogTitle);
+    return "Satz · Nivel " + item.lv;
+  }
+
+  function choicePromptHtml(item, filled) {
+    if (item.type === "sentence") {
+      return item.text.replace("___", `<span class="blank">${filled ? esc(item.answer) : ""}</span>`);
+    }
+    return esc(item.prompt);
+  }
+
+  function renderPromptFlip({ tag, body, de, flipped, extra = "" }) {
+    const canFlip = Boolean(de);
     return `
-      <button class="prompt-card" data-act="toggle-trans" ${item.de ? "" : "disabled"}>
-        ${item.topicTitle ? `<span class="tag">${esc(item.topicTitle)}</span>` : item.dialogTitle ? `<span class="tag">${esc(item.dialogTitle)}</span>` : `<span class="tag">Satz · Nivel ${item.lv}</span>`}
-        <div class="sentence" style="margin-top:12px">${prompt}</div>
-        ${item.hint ? `<p class="muted small" style="margin-top:10px">${esc(item.hint)}</p>` : ""}
-        ${
-          showDe
-            ? `<p class="card-de">${esc(item.de)}</p>`
-            : item.de
-              ? `<p class="muted small trans-hint">Karte tippen: Übersetzung</p>`
+      <div class="prompt-scene">
+        <button class="prompt-flip ${flipped ? "flipped" : ""}" data-act="toggle-trans" ${canFlip ? "" : "disabled"}>
+          <div class="prompt-face">
+            <span class="tag">${tag}</span>
+            <div class="sentence" style="margin-top:12px">${body}</div>
+            ${extra}
+            ${canFlip ? `<p class="muted small trans-hint">Karte tippen: Übersetzung</p>` : ""}
+          </div>
+          ${
+            canFlip
+              ? `<div class="prompt-face back">
+            <span class="tag">${tag}</span>
+            <div class="sentence" style="margin-top:12px">${body}</div>
+            ${extra}
+            <p class="card-de">${esc(de)}</p>
+          </div>`
               : ""
-        }
-      </button>
+          }
+        </button>
+      </div>`;
+  }
+
+  function renderChoice(item) {
+    const filled = Boolean(ui.session.answered);
+    const prompt = choicePromptHtml(item, filled);
+    const options = ui.session.options || item.options;
+    const chosenWrong = filled && ui.session.chosen === 0;
+    const showDe = Boolean(item.de) && (ui.session.showTrans || filled);
+    const hint = item.hint ? `<p class="muted small" style="margin-top:10px">${esc(item.hint)}</p>` : "";
+    return `
+      ${renderPromptFlip({ tag: choiceTag(item), body: prompt, de: item.de, flipped: showDe, extra: hint })}
       <div class="options">
         ${options
           .map((opt) => {
             let cls = "option";
-            if (ui.session.answered) {
+            if (filled) {
               if (opt === item.answer) cls += " correct";
               else if (opt === ui.session.picked) cls += " wrong";
             }
-            return `<button class="${cls}" data-act="choose" data-val="${esc(opt)}" ${ui.session.answered ? "disabled" : ""}>${esc(opt)}</button>`;
+            return `<button class="${cls}" data-act="choose" data-val="${esc(opt)}" ${filled ? "disabled" : ""}>${esc(opt)}</button>`;
           })
           .join("")}
       </div>
+      <div class="answer-slot">
       ${
-        ui.session.answered
+        filled
           ? `<div class="feedback ${chosenWrong ? "no" : "ok"}">${chosenWrong ? "Noch mal öfter." : "Sitzt."} ${esc(item.why || "")}</div>
              <button class="btn btn-primary" data-act="next">Weiter</button>`
           : ""
-      }`;
+      }
+      </div>`;
+  }
+
+  function patchChoiceAnswer(item) {
+    const root = app.querySelector(".screen");
+    if (!root?.querySelector(".options") || ui.view !== "study") return false;
+    root.querySelectorAll(".blank").forEach((el) => {
+      el.textContent = item.answer || "";
+    });
+    root.querySelectorAll(".option").forEach((btn) => {
+      btn.disabled = true;
+      btn.classList.toggle("correct", btn.dataset.val === item.answer);
+      btn.classList.toggle("wrong", btn.dataset.val === ui.session.picked && btn.dataset.val !== item.answer);
+    });
+    if (item.de) {
+      ui.session.showTrans = true;
+      root.querySelector(".prompt-flip")?.classList.add("flipped");
+    }
+    const chosenWrong = ui.session.chosen === 0;
+    const slot = root.querySelector(".answer-slot");
+    if (slot) {
+      slot.innerHTML = `<div class="feedback ${chosenWrong ? "no" : "ok"} pop-in">${chosenWrong ? "Noch mal öfter." : "Sitzt."} ${esc(item.why || "")}</div>
+        <button class="btn btn-primary pop-in" data-act="next">Weiter</button>`;
+    }
+    return true;
+  }
+
+  function patchTypedAnswer(item) {
+    const card = app.querySelector(".type-card");
+    if (!card) return false;
+    card.querySelector(".type-input")?.remove();
+    card.querySelector("[data-act='type-submit']")?.remove();
+    const box = document.createElement("div");
+    box.innerHTML = `<p class="card-de pop-in">${esc(displayEs(item))}</p>
+      <div class="feedback ${ui.session.chosen ? "ok" : "no"} pop-in">${esc(ui.session.typeResult || "")}</div>
+      <button class="btn btn-primary pop-in" data-act="next">Weiter</button>`;
+    while (box.firstChild) card.appendChild(box.firstChild);
+    return true;
+  }
+
+  function patchSpeakAnswer() {
+    const screen = app.querySelector(".screen.study-speak");
+    if (!screen) return false;
+    screen.querySelector(".speech-live")?.remove();
+    screen.querySelector(".listen-note")?.remove();
+    screen.querySelectorAll("[data-act='cancel-listen']").forEach((el) => el.remove());
+    screen.querySelector(".mic-btn")?.remove();
+    screen.querySelectorAll("button[data-act='abort']:not(.icon-btn)").forEach((el) => el.remove());
+    let slot = screen.querySelector(".answer-slot");
+    if (!slot) {
+      slot = document.createElement("div");
+      slot.className = "answer-slot";
+      screen.querySelector(".card-scene")?.after(slot);
+    }
+    slot.innerHTML = `<div class="feedback ${ui.session.chosen ? "ok" : "no"} pop-in">${esc(ui.session.listenNote || "")}</div>
+      <button class="btn btn-primary pop-in" data-act="next">Weiter</button>`;
+    return true;
+  }
+
+  function patchStudyAnswer() {
+    const item = currentItem();
+    if (!item || ui.view !== "study") return false;
+    if (isSpeakMode()) return patchSpeakAnswer();
+    if (shouldType(item)) return patchTypedAnswer(item);
+    if (isCardItem(item)) return false;
+    return patchChoiceAnswer(item);
+  }
+
+  function flipPromptCard(on) {
+    const flip = app.querySelector(".prompt-flip");
+    if (!flip) return false;
+    flip.classList.toggle("flipped", Boolean(on));
+    return true;
   }
 
   function renderStudy() {
@@ -728,7 +839,9 @@
           <span class="session-count">${s.index + 1} / ${s.queue.length}</span>
         </div>
         <div class="thin-progress"><span style="width:${pct}%"></span></div>
+        <div class="study-body">
         ${isCardItem(item) ? renderVocabCard(item) : renderChoice(item)}
+        </div>
       </div>
       ${s.showForms && forms ? renderFormsModal(forms) : ""}`;
   }
@@ -868,11 +981,7 @@
           <span class="speak-icon">🔊</span>
           Anhören
         </button>
-        <div class="prompt-card" data-act="toggle-trans">
-          <span class="tag">${esc(line.who)}</span>
-          <div class="sentence" style="margin-top:12px">${esc(line.es)}</div>
-          ${ui.dialogShowDe ? `<p class="card-de">${esc(line.de)}</p>` : `<p class="muted small trans-hint">Tippen: Übersetzung</p>`}
-        </div>
+        ${renderPromptFlip({ tag: esc(line.who), body: esc(line.es), de: line.de, flipped: ui.dialogShowDe })}
         <div class="dots">${d.lines.map((_, i) => `<i class="${i === ui.dialogLine ? "on" : ""}"></i>`).join("")}</div>
         <div class="grid-2">
           <button class="btn btn-ghost" data-act="dlg-prev" ${ui.dialogLine === 0 ? "disabled" : ""}>Zurück</button>
@@ -985,6 +1094,13 @@
       "add-word": renderAddWord
     };
     app.innerHTML = (map[ui.view] || renderHome)();
+    const screen = app.querySelector(".screen");
+    const card = ui.view === "study" && ui.session ? ui.session.index + ":" + (currentItem()?.id || "") : ui.view === "dialog-play" ? ui.dialogId + ":" + ui.dialogLine : "";
+    if (screen && lastPaint.view !== ui.view) screen.classList.add("enter");
+    else if (screen && lastPaint.card && lastPaint.card !== card) {
+      (screen.querySelector(".study-body") || screen.querySelector(".prompt-scene"))?.classList.add("swap");
+    }
+    lastPaint = { view: ui.view, card };
     afterRender();
   }
 
@@ -1019,6 +1135,7 @@
         </div>
         <p class="muted" style="margin-top:16px">Einmalig ~240 MB. Danach bleibt Whisper auf dem Gerät. Vorne Deutsch, du sagst ${esc(langOf(store).name)}.</p>
         ${err ? `<button class="btn btn-primary" data-act="retry-speech-model" style="margin-top:16px">Nochmal laden</button>` : ""}
+        <button class="btn btn-ghost" data-act="cancel-speak-load" style="margin-top:12px">Abbrechen</button>
       </div>`;
   }
 
@@ -1072,11 +1189,19 @@
   }
 
   function speechBtnLabel() {
-    if (ui.speechPhase === "loading") return "Lädt Modell…";
-    if (ui.speechPhase === "mic") return "Frage Mikrofon an…";
+    if (ui.speechPhase === "loading") return "Lädt Modell… Tippen bricht ab";
+    if (ui.speechPhase === "mic") return "Frage Mikrofon an… Tippen bricht ab";
     if (ui.speechPhase === "recording") return "Stopp · ich höre zu";
-    if (ui.speechPhase === "busy") return "Erkenne…";
+    if (ui.speechPhase === "busy") return "Abbrechen · hängt beim Erkennen";
     return "🎙 " + langOf(store).name + " sagen";
+  }
+
+  function cancelListen(note) {
+    PalabraSpeech.cancel();
+    ui.speechPhase = "idle";
+    ui.speechStatus = { phase: "idle", pct: 0, label: "" };
+    setListenNote(note || "Abgebrochen.");
+    render();
   }
 
   function setListenNote(msg) {
@@ -1106,18 +1231,22 @@
       startSession("speak");
       return;
     }
+    const gen = ++ui.speakLoadGen;
     ui.view = "speech-load";
     ui.modelProgress = { phase: "library", pct: 0, label: "Verbinde…" };
     render();
     try {
       await PalabraSpeech.ensure((p) => {
+        if (ui.speakLoadGen !== gen) return;
         if (!patchSpeechLoad(p)) {
           ui.view = "speech-load";
           render();
         }
       });
+      if (ui.speakLoadGen !== gen || ui.view !== "speech-load") return;
       startSession("speak");
     } catch (err) {
+      if (ui.speakLoadGen !== gen) return;
       ui.modelProgress = {
         pct: ui.modelProgress?.pct || 0,
         label: err?.message || "Modell konnte nicht geladen werden. WLAN prüfen und nochmal versuchen.",
@@ -1129,7 +1258,10 @@
   }
 
   async function startListen(expectedSay) {
-    if (ui.speechPhase === "loading" || ui.speechPhase === "busy") return;
+    if (ui.speechPhase === "loading" || ui.speechPhase === "busy" || ui.speechPhase === "mic") {
+      cancelListen("Erkennung abgebrochen.");
+      return;
+    }
     const item = currentItem();
     const target = expectedSay || (item ? displayEs(item) : "");
     const probe = item && ui.view === "study" ? item : { es: target, pos: "phr" };
@@ -1254,7 +1386,7 @@
     if (e.button) return;
     if (ui.view !== "study" || swipeLock) return;
     if (ui.session?.showForms) return;
-    if (e.target.closest("[data-act='speak'], [data-act='abort'], [data-act='toggle-forms'], [data-act='listen-say'], [data-act='type-submit'], .icon-btn, .type-input, .card-tools, .forms-modal, .mic-btn")) return;
+    if (e.target.closest("[data-act='speak'], [data-act='abort'], [data-act='cancel-listen'], [data-act='toggle-forms'], [data-act='toggle-trans'], [data-act='listen-say'], [data-act='type-submit'], .icon-btn, .type-input, .card-tools, .forms-modal, .mic-btn, .prompt-flip")) return;
     const wrap = e.target.closest(".swipe-wrap");
     if (!wrap || !isCardItem(currentItem()) || shouldType(currentItem())) return;
     e.preventDefault();
@@ -1269,8 +1401,12 @@
     if (!t) return;
 
     if (t.dataset.go) {
-      ui.view = t.dataset.go;
+      ui.speakLoadGen += 1;
+      PalabraSpeech.cancel();
+      ui.speechPhase = "idle";
+      ui.speechStatus = { phase: "idle", pct: 0, label: "" };
       if (t.dataset.go === "home") ui.toast = "";
+      ui.view = t.dataset.go;
       render();
       return;
     }
@@ -1331,12 +1467,12 @@
     } else if (act === "toggle-trans") {
       if (ui.view === "dialog-play") {
         ui.dialogShowDe = !ui.dialogShowDe;
-        render();
+        if (!flipPromptCard(ui.dialogShowDe)) render();
         return;
       }
-      if (!ui.session || ui.session.answered) return;
+      if (!ui.session) return;
       ui.session.showTrans = !ui.session.showTrans;
-      render();
+      if (!flipPromptCard(ui.session.showTrans)) render();
     } else if (act === "type-submit") {
       submitTyped();
     } else if (act === "toggle-forms") {
@@ -1355,6 +1491,15 @@
       return;
     } else if (act === "retry-speech-model") {
       startSpeakMode();
+    } else if (act === "cancel-listen") {
+      e.stopPropagation();
+      cancelListen("Erkennung abgebrochen.");
+    } else if (act === "cancel-speak-load") {
+      ui.speakLoadGen += 1;
+      PalabraSpeech.cancel();
+      ui.speechPhase = "idle";
+      ui.view = "home";
+      render();
     } else if (act === "listen-say") {
       e.stopPropagation();
       startListen(t.dataset.say);
@@ -1383,7 +1528,9 @@
     } else if (act === "flip") {
       if (!ui.session) return;
       ui.session.flipped = !ui.session.flipped;
-      render();
+      const card = app.querySelector(".flip-card");
+      if (card) card.classList.toggle("flipped", ui.session.flipped);
+      else render();
     } else if (act === "rate") {
       applyAnswer(Number(t.dataset.q));
     } else if (act === "choose") {
@@ -1395,8 +1542,10 @@
     } else if (act === "abort") {
       drag = null;
       swipeLock = false;
+      ui.speakLoadGen += 1;
       PalabraSpeech.cancel();
       ui.speechPhase = "idle";
+      ui.speechStatus = { phase: "idle", pct: 0, label: "" };
       ui.view = "home";
       ui.session = null;
       render();

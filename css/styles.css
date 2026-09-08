@@ -71,12 +71,21 @@ a { color: inherit; }
 .screen {
   min-height: 100dvh;
   padding: calc(18px + var(--safe-top)) 18px calc(var(--nav-h) + 18px);
-  animation: rise 0.35s ease;
 }
 .screen.no-nav { padding-bottom: calc(24px + var(--safe-bottom)); }
+.screen.enter { animation: rise 0.35s ease; }
+.study-body.swap { animation: cardIn 0.3s ease; }
 
 @keyframes rise {
   from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes cardIn {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes popIn {
+  from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: none; }
 }
 
@@ -200,6 +209,17 @@ a { color: inherit; }
   transition: transform 0.15s ease;
 }
 .tile:active { transform: scale(0.98); }
+.tile-wide {
+  width: 100%;
+  min-height: 88px;
+  margin-top: 12px;
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  justify-content: flex-start;
+}
+.tile-wide .emoji { font-size: 28px; }
+.tile-wide h3 { margin-top: 0; }
 .tile .emoji { font-size: 26px; }
 .tile h3 { font-size: 16px; margin-top: 10px; }
 .tile p { font-size: 12px; color: var(--ink-soft); margin-top: 4px; }
@@ -446,6 +466,12 @@ a { color: inherit; }
 .screen.study-vocab .thin-progress {
   flex-shrink: 0;
 }
+.screen.study-vocab .study-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
 .screen.study-speak .card-scene,
 .screen.study-speak .swipe-wrap,
 .screen.study-speak .flip-card {
@@ -470,6 +496,40 @@ a { color: inherit; }
 .thin-progress > span {
   display: block; height: 100%;
   background: var(--terracotta);
+  transition: width 0.35s ease;
+}
+
+.prompt-scene {
+  perspective: 1100px;
+  margin: 12px 0 16px;
+}
+.prompt-flip {
+  display: block;
+  position: relative;
+  width: 100%;
+  min-height: 168px;
+  padding: 0;
+  background: none;
+  text-align: center;
+  transform-style: preserve-3d;
+  transition: transform 0.42s cubic-bezier(.2,.75,.2,1);
+}
+.prompt-flip.flipped { transform: rotateY(180deg); }
+.prompt-flip:not(:disabled) { cursor: pointer; }
+.prompt-flip:disabled { cursor: default; }
+.prompt-face {
+  background: var(--paper);
+  border-radius: 28px;
+  box-shadow: var(--shadow);
+  padding: 26px 20px;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  min-height: 168px;
+}
+.prompt-face.back {
+  position: absolute;
+  inset: 0;
+  transform: rotateY(180deg);
 }
 
 .prompt-card {
@@ -523,6 +583,7 @@ a { color: inherit; }
   font-weight: 600;
   box-shadow: 0 1px 0 var(--line);
   border: 2px solid transparent;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
 }
 .option.correct {
   background: var(--good-bg);
@@ -549,6 +610,8 @@ a { color: inherit; }
   font-size: 14px;
   line-height: 1.4;
 }
+.pop-in { animation: popIn 0.28s ease; }
+.answer-slot:empty { display: none; }
 .feedback.ok { background: var(--good-bg); color: var(--good); }
 .feedback.no { background: var(--bad-bg); color: var(--bad); }
 
@@ -796,7 +859,8 @@ a { color: inherit; }
   flex-shrink: 0;
   box-shadow: var(--shadow);
 }
-.mic-btn.rec-on {
+.mic-btn.rec-on,
+.mic-btn.busy-on {
   background: var(--bad);
   animation: pulse-rec 1.1s ease infinite;
 }
