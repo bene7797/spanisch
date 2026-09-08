@@ -8,6 +8,7 @@ const PalabraSpeech = (() => {
   let stream = null;
   let timer = null;
   let recording = false;
+  const fileProg = {};
 
   function pickMime() {
     const types = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
@@ -29,6 +30,38 @@ const PalabraSpeech = (() => {
     return out;
   }
 
+  function reportProgress(info, onProgress) {
+    if (!onProgress || !info) return;
+    const file = String(info.file || info.name || "").split("/").pop();
+    if (info.status === "initiate") {
+      onProgress({ pct: Object.keys(fileProg).length ? currentPct() : 1, label: "Starte Download…" + (file ? " " + file : "") });
+      return;
+    }
+    if (typeof info.loaded === "number" && typeof info.total === "number" && info.total > 0) {
+      fileProg[info.file || file || "file"] = { loaded: info.loaded, total: info.total };
+      const pct = currentPct();
+      onProgress({ pct, label: (file || "Whisper") + " · " + pct + "%" });
+      return;
+    }
+    if (typeof info.progress === "number") {
+      const raw = info.progress <= 1 ? info.progress * 100 : info.progress;
+      const pct = Math.max(currentPct(), Math.round(raw));
+      onProgress({ pct, label: info.status === "done" ? "Datei fertig…" : "Lade Whisper… " + pct + "%" });
+      return;
+    }
+    if (info.status === "done") onProgress({ pct: Math.max(currentPct(), 90), label: "Datei gespeichert…" });
+    if (info.status === "ready") onProgress({ pct: 100, label: "Modell ist bereit." });
+  }
+
+  function currentPct() {
+    const parts = Object.values(fileProg);
+    if (!parts.length) return 0;
+    const loaded = parts.reduce((s, x) => s + x.loaded, 0);
+    const total = parts.reduce((s, x) => s + x.total, 0);
+    if (!total) return 0;
+    return Math.min(99, Math.round((100 * loaded) / total));
+  }
+
   async function blobToWave(blob) {
     const buf = await blob.arrayBuffer();
     const ac = new AudioContext();
@@ -45,23 +78,31 @@ const PalabraSpeech = (() => {
     return data;
   }
 
+  function isReady() {
+    return Boolean(pipe);
+  }
+
   async function ensure(onProgress) {
-    if (pipe) return pipe;
+    if (pipe) {
+      onProgress?.({ pct: 100, label: "Modell ist bereit." });
+      return pipe;
+    }
     if (loading) return loading;
+    onProgress?.({ pct: 0, label: "Lade Whisper-Bibliothek…" });
     loading = (async () => {
       const mod = await import(SRC);
       const { pipeline, env } = mod;
       if (env) {
         env.allowLocalModels = false;
         env.useBrowserCache = true;
+        env.allowRemoteModels = true;
       }
+      onProgress?.({ pct: 5, label: "Lade Modelldateien (~75 MB)…" });
       pipe = await pipeline("automatic-speech-recognition", MODEL, {
         dtype: "q8",
-        progress_callback: (info) => {
-          if (!onProgress || !info) return;
-          if (typeof info.progress === "number") onProgress(Math.round(info.progress));
-        }
+        progress_callback: (info) => reportProgress(info, onProgress)
       });
+      onProgress?.({ pct: 100, label: "Modell ist bereit." });
       return pipe;
     })();
     try {
@@ -174,5 +215,5 @@ const PalabraSpeech = (() => {
     await start(handlers);
   }
 
-  return { ensure, toggle, cancel, isRecording, stop };
+  return { ensure, toggle, cancel, isRecording, isReady, stop };
 })();

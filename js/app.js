@@ -15,7 +15,8 @@
     toast: "",
     formsLockUntil: 0,
     listenNote: "",
-    speechPhase: "idle"
+    speechPhase: "idle",
+    modelProgress: { pct: 0, label: "" }
   };
 
   let drag = null;
@@ -94,6 +95,7 @@
     if (mode === "sentence") return sentenceItems(level);
     if (mode === "dialog") return dialogCards(level);
     if (mode === "topic") return grammarItems(level, topicId);
+    if (mode === "speak") return [...vocabItems(level), ...chunkItems(level)];
     return [...vocabItems(level), ...chunkItems(level), ...grammarItems(level), ...sentenceItems(level)];
   }
 
@@ -103,7 +105,12 @@
 
   function shouldType(item) {
     if (!isCardItem(item)) return false;
+    if (ui.session?.mode === "speak") return false;
     return store.direction === "de-es";
+  }
+
+  function isSpeakMode() {
+    return ui.session?.mode === "speak";
   }
 
   function displayEs(item) {
@@ -272,6 +279,15 @@
     window.removeEventListener("pointercancel", endSwipe);
     if (swipeLock) return;
 
+    if (isSpeakMode()) {
+      snapBack(wrap);
+      if (!moved && ui.session) {
+        ui.session.flipped = !ui.session.flipped;
+        wrap.querySelector(".flip-card")?.classList.toggle("flipped", ui.session.flipped);
+      }
+      return;
+    }
+
     const absX = Math.abs(dx);
     const absY = Math.abs(dy);
     const tX = Math.max(72, wrap.clientWidth * 0.2);
@@ -363,6 +379,10 @@
           <div class="stat"><b>${store.unlockedLevel}/4</b><span>Level offen</span></div>
         </div>
         <div class="grid-2">
+          <button class="tile" data-act="start" data-mode="speak">
+            <div class="emoji">🎙</div>
+            <div><h3>Nachsprechen</h3><p>Deutsch sehen, Spanisch sagen</p></div>
+          </button>
           <button class="tile" data-act="start" data-mode="vocab">
             <div class="emoji">Aa</div>
             <div><h3>Vokabeln</h3><p>${dueCount("vocab")} in der Queue</p></div>
@@ -396,10 +416,11 @@
           <div><h3>Tagespensum</h3><p>${dueCount("daily")} Karten · Streak nur bei Pensum</p></div>
         </button>
         <div class="grid-2">
+          <button class="tile" data-act="start" data-mode="speak"><h3>Nachsprechen</h3><p>Deutsch → Spanisch sagen</p></button>
           <button class="tile" data-act="start" data-mode="vocab"><h3>Vokabeln</h3><p>${dueCount("vocab")}</p></button>
           <button class="tile" data-act="start" data-mode="chunk"><h3>Brocken</h3><p>${dueCount("chunk")}</p></button>
           <button class="tile" data-act="start" data-mode="sentence"><h3>Sätze</h3><p>${dueCount("sentence")}</p></button>
-          <button class="tile" data-go="dialogs"><h3>Dialoge</h3><p>Hören & nachsprechen</p></button>
+          <button class="tile" data-go="dialogs"><h3>Dialoge</h3><p>Zeilen durchgehen</p></button>
           <button class="tile" data-act="start" data-mode="grammar"><h3>Grammatik</h3><p>${dueCount("grammar")}</p></button>
           <button class="tile" data-act="start" data-mode="mixed"><h3>Gemischt</h3><p>${dueCount("mixed")}</p></button>
         </div>
@@ -475,7 +496,35 @@
   function renderVocabCard(item) {
     const typing = shouldType(item);
     const es = displayEs(item);
-    const deFront = store.direction === "de-es";
+    const speakMode = isSpeakMode();
+    const deFront = speakMode ? true : store.direction === "de-es";
+    if (speakMode) {
+      return `
+      <div class="card-scene">
+        <div class="swipe-wrap">
+          <div class="flip-card ${ui.session.flipped ? "flipped" : ""}">
+            <div class="face">
+              <span class="tag">${esc(POS_DE[item.pos] || item.pos)} · DE</span>
+              <div class="word">${esc(item.de)}</div>
+              <p class="muted small">Sag das auf Spanisch. Tippen zeigt die Lösung.</p>
+            </div>
+            <div class="face back">
+              <span class="tag">ES</span>
+              <div class="word">${esc(es)}</div>
+              ${item.ex ? `<p class="example"><em>${esc(item.ex)}</em></p>` : ""}
+              ${item.exde ? `<p class="example">${esc(item.exde)}</p>` : ""}
+            </div>
+          </div>
+        </div>
+      </div>
+      ${
+        ui.session.answered
+          ? `<div class="feedback ${ui.session.chosen ? "ok" : "no"}">${esc(ui.session.listenNote || "")}</div>
+             <button class="btn btn-primary" data-act="next">Weiter</button>`
+          : `${ui.session.listenNote ? `<p class="listen-note">${esc(ui.session.listenNote)}</p>` : ""}
+             <button class="mic-btn ${ui.speechPhase === "recording" ? "rec-on" : ""}" data-act="listen-say">${speechBtnLabel()}</button>`
+      }`;
+    }
     if (typing) {
       return `
       <button class="speak-bar" data-act="speak" data-say="${esc(es)}">
@@ -588,19 +637,17 @@
     if (!item) return renderHome();
     const s = ui.session;
     const pct = Math.round((s.index / s.queue.length) * 100);
-    const labels = { vocab: "Vokabeln", grammar: "Grammatik", sentence: "Sätze", mixed: "Gemischt", topic: "Thema", chunk: "Brocken", daily: "Pensum", dialog: "Dialog" };
-    const forms = isCardItem(item) ? getWordForms(item) : null;
+    const labels = { vocab: "Vokabeln", grammar: "Grammatik", sentence: "Sätze", mixed: "Gemischt", topic: "Thema", chunk: "Brocken", daily: "Pensum", dialog: "Dialog", speak: "Nachsprechen" };
+    const forms = isCardItem(item) && !isSpeakMode() ? getWordForms(item) : null;
     return `
-      <div class="screen no-nav ${isCardItem(item) ? "study-vocab" : ""}">
+      <div class="screen no-nav ${isCardItem(item) ? "study-vocab" : ""} ${isSpeakMode() ? "study-speak" : ""}">
         <div class="session-top">
           <button class="icon-btn" data-act="abort">×</button>
           <span class="chip">${labels[s.mode] || "Runde"}</span>
           ${forms ? `<button class="tool-btn forms-open" data-act="toggle-forms">Alle Formen</button>` : ""}
-          ${store.speechOn && isCardItem(item) ? `<button class="tool-btn ${ui.speechPhase === "recording" ? "rec-on" : ""}" data-act="listen-say">${speechBtnLabel()}</button>` : ""}
           <span class="session-count">${s.index + 1} / ${s.queue.length}</span>
         </div>
         <div class="thin-progress"><span style="width:${pct}%"></span></div>
-        ${s.listenNote ? `<p class="listen-note">${esc(s.listenNote)}</p>` : ""}
         ${isCardItem(item) ? renderVocabCard(item) : renderChoice(item)}
       </div>
       ${s.showForms && forms ? renderFormsModal(forms) : ""}`;
@@ -680,16 +727,10 @@
               ${[8, 12, 16, 24].map((n) => `<option ${store.sessionSize === n ? "selected" : ""}>${n}</option>`).join("")}
             </select>
           </label>
-          <label class="setting">Nachsprechen
-            <select class="select" data-act="speech">
-              <option value="0" ${store.speechOn ? "" : "selected"}>Aus</option>
-              <option value="1" ${store.speechOn ? "selected" : ""}>An (Whisper)</option>
-            </select>
-          </label>
         </div>
         <button class="btn ${store.reminders ? "btn-primary" : "btn-ghost"}" data-act="reminders" style="margin-bottom:12px">${store.reminders ? "Erinnerungen an" : "Erinnerungen einschalten"}</button>
         ${ui.toast ? `<p class="muted small" style="margin-bottom:12px">${esc(ui.toast)}</p>` : ""}
-        <p class="muted small" style="margin-bottom:12px">Nachsprechen ist optional. Es läuft Whisper lokal im Browser – nicht die schwache System-Erkennung. Beim ersten Mal wird das Modell einmal geladen (~75 MB), danach auf dem Gerät. Erinnerungen: App-Badge, wenn Karten fällig sind.</p>
+        <p class="muted small" style="margin-bottom:12px">Erinnerungen: App-Badge, wenn Karten fällig sind. Nachsprechen ist ein eigener Lernmodus auf der Startseite.</p>
         <button class="btn btn-ghost danger" data-act="reset">Fortschritt löschen</button>
       </div>`;
   }
@@ -745,8 +786,6 @@
             ? `<button class="btn btn-primary" data-act="start" data-mode="dialog" data-dialog="${d.id}">Jetzt üben</button>`
             : `<button class="btn btn-primary" data-act="dlg-next">Weiter</button>`}
         </div>
-        ${store.speechOn ? `<button class="btn ${ui.speechPhase === "recording" ? "btn-primary" : "btn-ghost"}" data-act="listen-say" data-say="${esc(line.es)}" style="margin-top:10px">${speechBtnLabel()}</button>` : ""}
-        ${ui.listenNote ? `<p class="listen-note">${esc(ui.listenNote)}</p>` : ""}
       </div>`;
   }
 
@@ -762,7 +801,8 @@
       stats: renderStats,
       settings: renderSettings,
       dialogs: renderDialogs,
-      "dialog-play": renderDialogPlay
+      "dialog-play": renderDialogPlay,
+      "speech-load": renderSpeechLoad
     };
     app.innerHTML = (map[ui.view] || renderHome)();
     afterRender();
@@ -779,11 +819,31 @@
     applyAnswer(result.quality);
   }
 
+  function renderSpeechLoad() {
+    const p = ui.modelProgress || { pct: 0, label: "" };
+    const err = Boolean(p.error);
+    return `
+      <div class="screen no-nav">
+        <div class="topbar">
+          <button class="icon-btn" data-go="home">←</button>
+          <h1>Nachsprechen</h1>
+        </div>
+        <div class="hero">
+          <div class="hero-kicker">Whisper</div>
+          <h2>${err ? "Download fehlgeschlagen" : "Modell wird geladen"}</h2>
+          <div class="progress"><span style="width:${Math.max(2, p.pct || 0)}%"></span></div>
+          <div class="hero-meta"><span>${esc(p.label || "Bitte warten…")}</span><span>${p.pct || 0}%</span></div>
+        </div>
+        <p class="muted" style="margin-top:16px">Einmalig ~75 MB. Danach bleibt Whisper auf dem Gerät und du siehst Deutsch, sagst Spanisch.</p>
+        ${err ? `<button class="btn btn-primary" data-act="retry-speech-model" style="margin-top:16px">Nochmal laden</button>` : ""}
+      </div>`;
+  }
+
   function speechBtnLabel() {
-    if (ui.speechPhase === "loading") return "Lädt…";
-    if (ui.speechPhase === "recording") return "Stopp";
+    if (ui.speechPhase === "loading") return "Lädt Modell…";
+    if (ui.speechPhase === "recording") return "Stopp · ich höre zu";
     if (ui.speechPhase === "busy") return "Erkenne…";
-    return "Nachsprechen";
+    return "🎙 Spanisch sagen";
   }
 
   function setListenNote(msg) {
@@ -791,8 +851,39 @@
     else if (ui.session) ui.session.listenNote = msg;
   }
 
+  async function startSpeakMode() {
+    if (PalabraSpeech.isReady()) {
+      startSession("speak");
+      return;
+    }
+    ui.view = "speech-load";
+    ui.modelProgress = { pct: 0, label: "Verbinde…" };
+    render();
+    let last = -1;
+    let lastAt = 0;
+    try {
+      await PalabraSpeech.ensure((p) => {
+        const now = Date.now();
+        if (p.pct === last && now - lastAt < 250) return;
+        last = p.pct;
+        lastAt = now;
+        ui.modelProgress = p;
+        ui.view = "speech-load";
+        render();
+      });
+      startSession("speak");
+    } catch (err) {
+      ui.modelProgress = {
+        pct: ui.modelProgress?.pct || 0,
+        label: err?.message || "Modell konnte nicht geladen werden. WLAN prüfen und nochmal versuchen.",
+        error: true
+      };
+      ui.view = "speech-load";
+      render();
+    }
+  }
+
   async function startListen(expectedSay) {
-    if (!store.speechOn) return;
     if (ui.speechPhase === "loading" || ui.speechPhase === "busy") return;
     const item = currentItem();
     const target = expectedSay || (item ? displayEs(item) : "");
@@ -800,20 +891,27 @@
     try {
       await PalabraSpeech.toggle({
         onProgress: (p) => {
+          if (ui.view === "speech-load") return;
           if (ui.speechPhase !== "loading") return;
-          setListenNote("Modell " + p + " % – einmaliger Download.");
-          if (p === 100 || p % 25 === 0) render();
+          setListenNote((p.label || "Lade Modell…") + (p.pct ? " " + p.pct + "%" : ""));
+          if (p.pct === 100 || p.pct % 10 === 0) render();
         },
         onStatus: (phase) => {
           ui.speechPhase = phase;
-          if (phase === "loading") setListenNote("Whisper wird geladen. Danach lokal auf dem Gerät.");
-          if (phase === "recording") setListenNote("Sprich jetzt. Nochmal tippen zum Stoppen.");
+          if (phase === "loading") setListenNote("Whisper wird geladen…");
+          if (phase === "recording") setListenNote("Sprich jetzt auf Spanisch.");
           if (phase === "busy") setListenNote("Erkenne mit Whisper…");
           render();
         },
         onResult: (text) => {
           ui.speechPhase = "idle";
-          setListenNote(scoreSpoken(text, probe).note);
+          const scored = scoreSpoken(text, probe);
+          setListenNote(scored.note);
+          if (isSpeakMode() && ui.session && !ui.session.answered) {
+            ui.session.listenNote = scored.note;
+            applyAnswer(scored.ok ? 1 : 0);
+            return;
+          }
           render();
         },
         onError: (err) => {
@@ -900,7 +998,7 @@
     if (e.button) return;
     if (ui.view !== "study" || swipeLock) return;
     if (ui.session?.showForms) return;
-    if (e.target.closest("[data-act='speak'], [data-act='abort'], [data-act='toggle-forms'], [data-act='listen-say'], [data-act='type-submit'], .icon-btn, .type-input, .card-tools, .forms-modal")) return;
+    if (e.target.closest("[data-act='speak'], [data-act='abort'], [data-act='toggle-forms'], [data-act='listen-say'], [data-act='type-submit'], .icon-btn, .type-input, .card-tools, .forms-modal, .mic-btn")) return;
     const wrap = e.target.closest(".swipe-wrap");
     if (!wrap || !isCardItem(currentItem()) || shouldType(currentItem())) return;
     e.preventDefault();
@@ -931,6 +1029,10 @@
     const act = t.dataset.act;
     if (act === "start") {
       const mode = t.dataset.mode || "mixed";
+      if (mode === "speak") {
+        startSpeakMode();
+        return;
+      }
       const topic = t.dataset.topic;
       const dialog = t.dataset.dialog;
       startSession(mode === "topic" || topic ? "topic" : mode, {
@@ -972,6 +1074,8 @@
       render();
     } else if (act === "forms-noop") {
       return;
+    } else if (act === "retry-speech-model") {
+      startSpeakMode();
     } else if (act === "listen-say") {
       e.stopPropagation();
       startListen(t.dataset.say);
@@ -1049,14 +1153,6 @@
     if (t.dataset.act === "size") {
       store.sessionSize = Number(t.value);
       persist();
-    }
-    if (t.dataset.act === "speech") {
-      store.speechOn = t.value === "1";
-      persist();
-      if (!store.speechOn) {
-        PalabraSpeech.cancel();
-        ui.speechPhase = "idle";
-      }
     }
   });
 
