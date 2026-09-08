@@ -12,10 +12,7 @@
     dialogId: null,
     dialogLine: 0,
     dialogShowDe: false,
-    listenNote: "",
-    toast: "",
-    listening: false,
-    dialogSpoken: null
+    toast: ""
   };
 
   let drag = null;
@@ -103,9 +100,7 @@
 
   function shouldType(item) {
     if (!isCardItem(item)) return false;
-    if (store.direction === "de-es") return true;
-    const p = getProgress(store, item.id);
-    return p.reps >= 2 || p.correct >= 3;
+    return store.direction === "de-es";
   }
 
   function displayEs(item) {
@@ -145,10 +140,8 @@
       chosen: null,
       showTrans: false,
       showForms: false,
-      spoken: false,
       typed: "",
       typeResult: null,
-      listenNote: "",
       options: shuffleOptions(queue[0])
     };
     ui.view = "study";
@@ -201,10 +194,8 @@
     ui.session.chosen = null;
     ui.session.showTrans = false;
     ui.session.showForms = false;
-    ui.session.spoken = false;
     ui.session.typed = "";
     ui.session.typeResult = null;
-    ui.session.listenNote = "";
     ui.session.options = shuffleOptions(currentItem());
     render();
   }
@@ -475,16 +466,10 @@
   function renderVocabCard(item) {
     const typing = shouldType(item);
     const es = displayEs(item);
-    const hideWord = store.audioFirst && !ui.session.flipped && !typing;
+    const deFront = store.direction === "de-es";
     const forms = getWordForms(item);
-    const front = hideWord ? "🎧" : es;
-    const frontHint = hideWord ? "Erst hören, dann Karte tippen" : "Tippen zum Umdrehen";
     const tools = `
-      <div class="card-tools">
-        <button class="tool-btn" data-act="listen-say" data-say="${esc(es)}">🎙 Nachsprechen</button>
-        ${forms ? `<button class="tool-btn" data-act="toggle-forms">Alle Formen</button>` : ""}
-      </div>
-      ${ui.session.listenNote ? `<p class="muted small" style="text-align:center">${esc(ui.session.listenNote)}</p>` : ""}
+      ${forms ? `<div class="card-tools"><button class="tool-btn" data-act="toggle-forms">Alle Formen</button></div>` : ""}
       ${ui.session.showForms && forms ? renderFormsBox(forms) : ""}`;
     if (typing) {
       return `
@@ -507,6 +492,8 @@
       </div>
       ${tools}`;
     }
+    const front = deFront ? item.de : es;
+    const back = deFront ? es : item.de;
     return `
       <button class="speak-bar" data-act="speak" data-say="${esc(es)}">
         <span class="speak-icon">🔊</span>
@@ -519,16 +506,15 @@
           <div class="stamp stamp-easy">Sitzt</div>
           <div class="flip-card ${ui.session.flipped ? "flipped" : ""}">
             <div class="face">
-              <span class="tag">${esc(POS_DE[item.pos] || item.pos)} · Nivel ${item.lv}</span>
-              <div class="word ${hideWord ? "listen-only" : ""}">${esc(front)}</div>
-              <p class="muted small">${frontHint}</p>
+              <span class="tag">${esc(POS_DE[item.pos] || item.pos)} · Nivel ${item.lv} · ${deFront ? "DE" : "ES"}</span>
+              <div class="word">${esc(front)}</div>
+              <p class="muted small">Tippen zum Umdrehen</p>
             </div>
             <div class="face back">
-              <span class="tag">${esc(POS_DE[item.pos] || item.pos)}</span>
-              <div class="word">${esc(item.de)}</div>
-              <p class="example">${esc(es)}</p>
-              <p class="example">${esc(item.exde || "")}</p>
-              <p class="example"><em>${esc(item.ex || "")}</em></p>
+              <span class="tag">${deFront ? "ES" : "DE"}</span>
+              <div class="word">${esc(back)}</div>
+              ${item.ex ? `<p class="example"><em>${esc(item.ex)}</em></p>` : ""}
+              ${item.exde ? `<p class="example">${esc(item.exde)}</p>` : ""}
             </div>
           </div>
         </div>
@@ -676,12 +662,6 @@
               <option value="de-es" ${store.direction === "de-es" ? "selected" : ""}>DE → ES (Tippen)</option>
             </select>
           </label>
-          <label class="setting">Erst hören
-            <select class="select" data-act="audioFirst">
-              <option value="1" ${store.audioFirst ? "selected" : ""}>An</option>
-              <option value="0" ${store.audioFirst ? "" : "selected"}>Aus</option>
-            </select>
-          </label>
           <label class="setting">Karten pro Runde
             <select class="select" data-act="size">
               ${[8, 12, 16, 24].map((n) => `<option ${store.sessionSize === n ? "selected" : ""}>${n}</option>`).join("")}
@@ -700,7 +680,7 @@
     return `
       <div class="screen">
         <div class="topbar"><h1>Dialoge</h1></div>
-        <p class="muted" style="margin-bottom:12px">Erst anhören, dann die Zeilen abfragen.</p>
+        <p class="muted" style="margin-bottom:12px">Zeilen durchgehen, dann die Dialoge abfragen.</p>
         ${list
           .map(
             (d) => `<button class="topic" data-act="open-dialog" data-dialog="${d.id}">
@@ -746,8 +726,6 @@
             ? `<button class="btn btn-primary" data-act="start" data-mode="dialog" data-dialog="${d.id}">Jetzt üben</button>`
             : `<button class="btn btn-primary" data-act="dlg-next">Weiter</button>`}
         </div>
-        <button class="btn btn-ghost" data-act="listen-say" data-say="${esc(line.es)}" style="margin-top:10px">🎙 Nachsprechen</button>
-        ${ui.listenNote ? `<p class="muted small" style="text-align:center;margin-top:8px">${esc(ui.listenNote)}</p>` : ""}
       </div>`;
   }
 
@@ -778,51 +756,6 @@
     ui.session.typed = val;
     ui.session.typeResult = result.note;
     applyAnswer(result.quality);
-  }
-
-  function startListen(expectedSay) {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const setNote = (msg) => {
-      if (ui.view === "dialog-play") ui.listenNote = msg;
-      else if (ui.session) ui.session.listenNote = msg;
-    };
-    if (!SR) {
-      ui.listening = false;
-      setNote("Nachsprechen klappt in Chrome oder aktuellem Safari.");
-      render();
-      return;
-    }
-    const item = currentItem();
-    const target = expectedSay || (item ? displayEs(item) : "");
-    const rec = new SR();
-    rec.lang = "es-ES";
-    rec.interimResults = false;
-    rec.maxAlternatives = 3;
-    rec.onresult = (ev) => {
-      ui.listening = false;
-      const heard = Array.from(ev.results[0]).map((r) => r.transcript).join(" ");
-      const probe = item && ui.view === "study" ? item : { es: target, pos: "phr" };
-      setNote(scoreSpoken(heard, probe).note);
-      render();
-    };
-    rec.onerror = () => {
-      ui.listening = false;
-      setNote("Mikrofon nicht erkannt.");
-      render();
-    };
-    rec.onend = () => {
-      ui.listening = false;
-    };
-    ui.listening = true;
-    if (ui.view === "dialog-play") ui.dialogSpoken = ui.dialogId + ":" + ui.dialogLine;
-    setNote("Sprech jetzt…");
-    try {
-      rec.start();
-    } catch {
-      ui.listening = false;
-      setNote("Mikrofon schon aktiv.");
-    }
-    render();
   }
 
   function dueTotal() {
@@ -879,20 +812,6 @@
 
   function afterRender() {
     updateBadge();
-    const item = currentItem();
-    if (ui.view === "study" && isCardItem(item) && store.audioFirst && !ui.session.spoken && !shouldType(item) && !ui.listening) {
-      ui.session.spoken = true;
-      window.setTimeout(() => speak(displayEs(item)), 250);
-    }
-    if (ui.view === "dialog-play" && !ui.listening) {
-      const d = DIALOGS.find((x) => x.id === ui.dialogId);
-      const line = d?.lines[ui.dialogLine];
-      const key = ui.dialogId + ":" + ui.dialogLine;
-      if (line && store.audioFirst && ui.dialogSpoken !== key) {
-        ui.dialogSpoken = key;
-        window.setTimeout(() => speak(line.es), 250);
-      }
-    }
     const input = app.querySelector(".type-input");
     if (input) {
       input.focus();
@@ -908,7 +827,7 @@
   app.addEventListener("pointerdown", (e) => {
     if (e.button) return;
     if (ui.view !== "study" || swipeLock) return;
-    if (e.target.closest("[data-act='speak'], [data-act='abort'], [data-act='listen-say'], [data-act='toggle-forms'], [data-act='type-submit'], .icon-btn, .type-input, .card-tools, .forms-box")) return;
+    if (e.target.closest("[data-act='speak'], [data-act='abort'], [data-act='toggle-forms'], [data-act='type-submit'], .icon-btn, .type-input, .card-tools, .forms-box")) return;
     const wrap = e.target.closest(".swipe-wrap");
     if (!wrap || !isCardItem(currentItem()) || shouldType(currentItem())) return;
     e.preventDefault();
@@ -971,25 +890,19 @@
       if (!ui.session) return;
       ui.session.showForms = !ui.session.showForms;
       render();
-    } else if (act === "listen-say") {
-      e.stopPropagation();
-      startListen(t.dataset.say);
     } else if (act === "open-dialog") {
       ui.dialogId = t.dataset.dialog;
       ui.dialogLine = 0;
       ui.dialogShowDe = false;
-      ui.listenNote = "";
       ui.view = "dialog-play";
       render();
     } else if (act === "dlg-next") {
       ui.dialogLine += 1;
       ui.dialogShowDe = false;
-      ui.listenNote = "";
       render();
     } else if (act === "dlg-prev") {
       ui.dialogLine = Math.max(0, ui.dialogLine - 1);
       ui.dialogShowDe = false;
-      ui.listenNote = "";
       render();
     } else if (act === "reminders") {
       toggleReminders();
@@ -1008,7 +921,6 @@
     } else if (act === "abort") {
       drag = null;
       swipeLock = false;
-      ui.listening = false;
       ui.view = "home";
       ui.session = null;
       render();
@@ -1039,10 +951,6 @@
     const t = e.target;
     if (t.dataset.act === "direction") {
       store.direction = t.value;
-      persist();
-    }
-    if (t.dataset.act === "audioFirst") {
-      store.audioFirst = t.value === "1";
       persist();
     }
     if (t.dataset.act === "size") {

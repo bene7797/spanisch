@@ -235,14 +235,3 @@ function scoreTyped(input, item) {
   }
   return { quality: 0, note: "Richtig: " + expected };
 }
-
-function scoreSpoken(heard, item) {
-  const expected = expectedSpanish(item);
-  const a = foldText(heard);
-  const b = foldText(expected);
-  if (!a) return { ok: false, note: "Nichts erkannt." };
-  if (a === b || a.includes(b) || b.includes(a)) return { ok: true, note: "Klingt gut." };
-  const lemma = foldText(stripArticle(expected));
-  if (lemma && (a.includes(lemma) || lemma.includes(a))) return { ok: true, note: "Passt." };
-  return { ok: false, note: "Gehört: „" + heard + "“ · Ziel: " + expected };
-}

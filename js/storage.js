@@ -8,7 +8,6 @@ function defaultStore() {
     unlockedLevel: 1,
     sessionSize: 12,
     direction: "es-de",
-    audioFirst: true,
     reminders: false,
     quotaDoneOn: null,
     lastNotifyDate: null,
