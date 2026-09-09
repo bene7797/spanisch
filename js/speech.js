@@ -8,10 +8,7 @@ const PalabraSpeech = (() => {
   const START_FRAMES = 2;
   const END_FRAMES = 22;
   const MIN_SPEECH = Math.round(0.16 * TARGET_RATE);
-  const PARTIAL_AFTER = Math.round(0.7 * TARGET_RATE);
-  const PARTIAL_EVERY = 750;
   const NO_SPEECH_MS = 8000;
-  const FINAL_TIMEOUT = 14000;
 
   const WORKLET_SRC = `
 class PalabraCapture extends AudioWorkletProcessor {
@@ -414,16 +411,6 @@ registerProcessor("palabra-capture", PalabraCapture);
     recState = null;
   }
 
-  function killWorker() {
-    if (!worker) return;
-    try { worker.terminate(); } catch {}
-    worker = null;
-    workerReady = false;
-    loading = null;
-    pending.forEach((job) => job.reject(new Error("Abgebrochen.")));
-    pending.clear();
-  }
-
   async function finalize(state, reason) {
     if (!state || state.finalizing) return;
     state.finalizing = true;
@@ -456,13 +443,7 @@ registerProcessor("palabra-capture", PalabraCapture);
       return;
     }
     state.handlers.onStatus?.("busy");
-    state.handlers.onProgress?.({ phase: "transcribe", pct: 100, label: "Stabilisiere Ergebnis…" });
-    state.busyTimer = setTimeout(() => {
-      if (id !== runId) return;
-      killWorker();
-      state.handlers.onError?.(new Error("Erkennung hängt. Abgebrochen – nochmal versuchen."));
-      recState = null;
-    }, FINAL_TIMEOUT);
+    state.handlers.onProgress?.({ phase: "transcribe", pct: 100, label: "Wertet die Aufnahme aus – bitte warten…" });
     try {
       await ensure(state.handlers.onProgress);
       if (aborted || id !== runId) return;
@@ -475,30 +456,7 @@ registerProcessor("palabra-capture", PalabraCapture);
       if (aborted || id !== runId) return;
       state.handlers.onError?.(err);
     } finally {
-      if (state.busyTimer) clearTimeout(state.busyTimer);
       if (recState === state) recState = null;
-    }
-  }
-
-  async function maybePartial(state) {
-    if (!state || state.finalizing || state.partialBusy) return;
-    if (!state.vad.started) return;
-    const now = performance.now();
-    if (now - state.lastPartialAt < PARTIAL_EVERY) return;
-    const used = Math.min(state.filled, MAX_SAMPLES);
-    const start = state.vad.startSample;
-    if (used - start < PARTIAL_AFTER) return;
-    state.partialBusy = true;
-    state.lastPartialAt = now;
-    try {
-      const clip = state.buffer.subarray(start, used);
-      const msg = await transcribeAudio(clip, state.language, true);
-      if (aborted || state.id !== runId || state.finalizing) return;
-      const text = cleanTranscript(msg.text);
-      if (text) state.handlers.onPartial?.(text, { ms: msg.ms });
-    } catch {
-    } finally {
-      if (state) state.partialBusy = false;
     }
   }
 
@@ -561,7 +519,7 @@ registerProcessor("palabra-capture", PalabraCapture);
         finalize(state);
         return;
       }
-      if (state.vad.started && isReady()) maybePartial(state);
+      if (state.vad.started) return;
     };
     state.unbind = await bindCapture(ac, stream, onFrame);
     if (aborted || id !== runId) {
@@ -595,10 +553,7 @@ registerProcessor("palabra-capture", PalabraCapture);
       stop();
       return;
     }
-    if (recState?.finalizing) {
-      cancel();
-      return;
-    }
+    if (recState?.finalizing) return;
     await start(handlers);
   }
 

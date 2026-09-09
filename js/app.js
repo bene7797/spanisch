@@ -1177,7 +1177,7 @@
     };
     const label =
       p.label ||
-      (phase === "loading" ? "Lädt oder öffnet das Modell…" : phase === "mic" ? "Browser fragt Mikrofon-Erlaubnis…" : phase === "recording" ? "Sprich jetzt – Ergebnis kommt live." : phase === "busy" ? "Mache den Text fertig…" : "Tippe auf das Mikrofon und sprich.");
+      (phase === "loading" ? "Lädt oder öffnet das Modell…" : phase === "mic" ? "Browser fragt Mikrofon-Erlaubnis…" : phase === "recording" ? "Sprich jetzt." : phase === "busy" ? "Wertet die Aufnahme aus – das darf auf dem Handy ein paar Sekunden dauern." : "Tippe auf das Mikrofon und sprich.");
     return `<div class="speech-live" data-phase="${esc(phase)}">
       <div class="speech-live-top">
         <b>${titles[phase] || "Status"}</b>
@@ -1192,7 +1192,7 @@
     if (ui.speechPhase === "loading") return "Lädt Modell…";
     if (ui.speechPhase === "mic") return "Frage Mikrofon an…";
     if (ui.speechPhase === "recording") return "Stopp · ich höre zu";
-    if (ui.speechPhase === "busy") return "Wertet aus…";
+    if (ui.speechPhase === "busy") return "Bitte warten…";
     return "🎙 " + langOf(store).name + " sagen";
   }
 
@@ -1286,11 +1286,7 @@
   async function startListen(expectedSay) {
     const now = Date.now();
     if (now < listenGuardUntil) return;
-    if (ui.speechPhase === "loading" || ui.speechPhase === "mic") return;
-    if (ui.speechPhase === "busy") {
-      cancelListen("Erkennung abgebrochen.");
-      return;
-    }
+    if (ui.speechPhase === "loading" || ui.speechPhase === "mic" || ui.speechPhase === "busy") return;
     const item = currentItem();
     const target = expectedSay || (item ? displayEs(item) : "");
     const probe = item && ui.view === "study" ? item : { es: target, pos: "phr" };
@@ -1312,7 +1308,7 @@
             loading: "Whisper wird geladen oder aus dem Cache geholt…",
             mic: "Frage Mikrofon an…",
             recording: "Sprich jetzt auf " + langOf(store).name + ".",
-            busy: "Stabilisiere den Text…"
+            busy: "Wertet die Aufnahme aus – bitte warten…"
           };
           const note = notes[phase] || "";
           if (!patchSpeechUi(phase, note)) {
@@ -1534,6 +1530,7 @@
     } else if (act === "cancel-listen") {
       e.stopPropagation();
       if (Date.now() < listenGuardUntil) return;
+      if (ui.speechPhase === "busy") return;
       cancelListen("Erkennung abgebrochen.");
     } else if (act === "cancel-speak-load") {
       ui.speakLoadGen += 1;
