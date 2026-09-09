@@ -26,6 +26,7 @@
   let drag = null;
   let swipeLock = false;
   let lastPaint = { view: "", card: "" };
+  let listenGuardUntil = 0;
 
   function el(html) {
     return html;
@@ -606,7 +607,7 @@
           ? `<div class="feedback ${ui.session.chosen ? "ok" : "no"}">${esc(ui.session.listenNote || "")}</div>
              <button class="btn btn-primary" data-act="next">Weiter</button>`
           : `${speechStatusCard()}
-             ${ui.session.listenNote ? `<p class="listen-note">${esc(ui.session.listenNote)}</p>` : ""}
+             <p class="listen-note">${esc(ui.session.listenNote || "")}</p>
              <button class="mic-btn ${ui.speechPhase === "recording" ? "rec-on" : ""} ${ui.speechPhase === "busy" ? "busy-on" : ""}" data-act="listen-say">${speechBtnLabel()}</button>
              ${
                ui.speechPhase !== "idle"
@@ -1166,8 +1167,7 @@
 
   function speechStatusCard() {
     const p = ui.speechStatus || {};
-    const phase = ui.speechPhase;
-    if (phase === "idle" && !p.label) return "";
+    const phase = ui.speechPhase || "idle";
     const titles = {
       idle: "Bereit",
       loading: "Bereite Whisper vor",
@@ -1177,7 +1177,7 @@
     };
     const label =
       p.label ||
-      (phase === "loading" ? "Lädt oder öffnet das Modell…" : phase === "mic" ? "Browser fragt Mikrofon-Erlaubnis…" : phase === "recording" ? "Sprich jetzt – Ergebnis kommt live." : phase === "busy" ? "Mache den Text fertig…" : "");
+      (phase === "loading" ? "Lädt oder öffnet das Modell…" : phase === "mic" ? "Browser fragt Mikrofon-Erlaubnis…" : phase === "recording" ? "Sprich jetzt – Ergebnis kommt live." : phase === "busy" ? "Mache den Text fertig…" : "Tippe auf das Mikrofon und sprich.");
     return `<div class="speech-live" data-phase="${esc(phase)}">
       <div class="speech-live-top">
         <b>${titles[phase] || "Status"}</b>
@@ -1189,11 +1189,37 @@
   }
 
   function speechBtnLabel() {
-    if (ui.speechPhase === "loading") return "Lädt Modell… Tippen bricht ab";
-    if (ui.speechPhase === "mic") return "Frage Mikrofon an… Tippen bricht ab";
+    if (ui.speechPhase === "loading") return "Lädt Modell…";
+    if (ui.speechPhase === "mic") return "Frage Mikrofon an…";
     if (ui.speechPhase === "recording") return "Stopp · ich höre zu";
-    if (ui.speechPhase === "busy") return "Abbrechen · wertet aus";
+    if (ui.speechPhase === "busy") return "Wertet aus…";
     return "🎙 " + langOf(store).name + " sagen";
+  }
+
+  function patchSpeechUi(phase, note) {
+    if (phase) ui.speechPhase = phase;
+    if (note != null) setListenNote(note);
+    const mic = app.querySelector(".mic-btn");
+    const live = app.querySelector(".speech-live");
+    const liveP = app.querySelector(".speech-live p");
+    const liveTitle = app.querySelector(".speech-live-top b");
+    const listenNote = app.querySelector(".listen-note");
+    if (!mic) return false;
+    mic.textContent = speechBtnLabel();
+    mic.classList.toggle("rec-on", ui.speechPhase === "recording");
+    mic.classList.toggle("busy-on", ui.speechPhase === "busy");
+    if (live) live.dataset.phase = ui.speechPhase || "idle";
+    const titles = {
+      idle: "Bereit",
+      loading: "Bereite Whisper vor",
+      mic: "Frage Mikrofon an",
+      recording: "Hört zu",
+      busy: "Stabilisiert"
+    };
+    if (liveTitle) liveTitle.textContent = titles[ui.speechPhase] || liveTitle.textContent;
+    if (liveP && note) liveP.textContent = note;
+    if (listenNote && note) listenNote.textContent = note;
+    return true;
   }
 
   function cancelListen(note) {
@@ -1258,13 +1284,17 @@
   }
 
   async function startListen(expectedSay) {
-    if (ui.speechPhase === "loading" || ui.speechPhase === "busy" || ui.speechPhase === "mic") {
+    const now = Date.now();
+    if (now < listenGuardUntil) return;
+    if (ui.speechPhase === "loading" || ui.speechPhase === "mic") return;
+    if (ui.speechPhase === "busy") {
       cancelListen("Erkennung abgebrochen.");
       return;
     }
     const item = currentItem();
     const target = expectedSay || (item ? displayEs(item) : "");
     const probe = item && ui.view === "study" ? item : { es: target, pos: "phr" };
+    listenGuardUntil = now + 1000;
     try {
       await PalabraSpeech.toggle({
         language: langOf(store).whisper,
@@ -1275,39 +1305,29 @@
             return;
           }
           const note = (p.label || "Lade Modell…") + (p.pct ? " · " + p.pct + "%" : "");
-          setListenNote(note);
-          const live = app.querySelector(".speech-live p");
-          const bar = app.querySelector(".speech-live .progress > span");
-          const top = app.querySelector(".speech-live-top span");
-          if (live) live.textContent = p.label || note;
-          if (bar) bar.style.width = Math.max(2, p.pct || 0) + "%";
-          if (top && (p.pct || p.phase === "download")) top.textContent = (p.pct || 0) + "%";
+          if (!patchSpeechUi(ui.speechPhase, note)) setListenNote(note);
         },
         onStatus: (phase) => {
-          ui.speechPhase = phase;
-          if (phase === "loading") setListenNote("Whisper wird geladen oder aus dem Cache geholt…");
-          if (phase === "mic") setListenNote("Frage Mikrofon an…");
-          if (phase === "recording") setListenNote("Sprich jetzt auf " + langOf(store).name + ".");
-          if (phase === "busy") setListenNote("Stabilisiere den Text…");
-          render();
+          const notes = {
+            loading: "Whisper wird geladen oder aus dem Cache geholt…",
+            mic: "Frage Mikrofon an…",
+            recording: "Sprich jetzt auf " + langOf(store).name + ".",
+            busy: "Stabilisiere den Text…"
+          };
+          const note = notes[phase] || "";
+          if (!patchSpeechUi(phase, note)) {
+            ui.speechPhase = phase;
+            if (note) setListenNote(note);
+            render();
+          }
         },
         onPartial: (text) => {
           if (!text) return;
           const shown = "„" + text + "“";
-          setListenNote(shown);
-          const live = app.querySelector(".speech-live p");
-          const note = app.querySelector(".listen-note");
-          if (live) live.textContent = shown;
-          if (note) note.textContent = shown;
-          else if (ui.session && !ui.session.answered) {
-            const card = app.querySelector(".study-speak") || app;
-            const slot = card.querySelector(".mic-btn");
-            if (slot && !card.querySelector(".listen-note")) {
-              const p = document.createElement("p");
-              p.className = "listen-note";
-              p.textContent = shown;
-              slot.before(p);
-            }
+          if (!patchSpeechUi(ui.speechPhase, shown)) {
+            setListenNote(shown);
+            const live = app.querySelector(".speech-live p");
+            if (live) live.textContent = shown;
           }
         },
         onResult: (text) => {
@@ -1330,7 +1350,8 @@
     } catch (err) {
       ui.speechPhase = "idle";
       PalabraSpeech.cancel();
-      setListenNote(err?.message || "Mikrofon nicht erkannt.");
+      const msg = err?.message || "Mikrofon nicht erkannt.";
+      setListenNote(msg === "Abgebrochen." ? "Aufnahme gestoppt." : msg);
       render();
     }
   }
@@ -1512,6 +1533,7 @@
       startSpeakMode();
     } else if (act === "cancel-listen") {
       e.stopPropagation();
+      if (Date.now() < listenGuardUntil) return;
       cancelListen("Erkennung abgebrochen.");
     } else if (act === "cancel-speak-load") {
       ui.speakLoadGen += 1;

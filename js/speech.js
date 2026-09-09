@@ -6,11 +6,11 @@ const PalabraSpeech = (() => {
   const MAX_SAMPLES = TARGET_RATE * MAX_SECONDS;
   const FRAME = 512;
   const START_FRAMES = 2;
-  const END_FRAMES = 14;
+  const END_FRAMES = 22;
   const MIN_SPEECH = Math.round(0.16 * TARGET_RATE);
   const PARTIAL_AFTER = Math.round(0.7 * TARGET_RATE);
   const PARTIAL_EVERY = 750;
-  const NO_SPEECH_MS = 4500;
+  const NO_SPEECH_MS = 8000;
   const FINAL_TIMEOUT = 14000;
 
   const WORKLET_SRC = `
@@ -114,23 +114,33 @@ registerProcessor("palabra-capture", PalabraCapture);
   function attachWorker(onProgress) {
     return new Promise((resolve, reject) => {
       let settled = false;
+      let sawProgress = false;
       const w = new Worker(workerUrl(), { type: "module" });
       const fail = (err) => {
         if (settled) return;
         settled = true;
+        clearTimeout(bootTimer);
         try { w.terminate(); } catch {}
         reject(err instanceof Error ? err : new Error(String(err)));
       };
+      const bootTimer = setTimeout(() => {
+        if (!sawProgress) fail(new Error("Worker startet nicht."));
+      }, 5000);
       w.onerror = (e) => fail(e.message || "Worker fehlgeschlagen.");
+      w.onmessageerror = () => fail(new Error("Worker-Nachricht unlesbar."));
       w.onmessage = (e) => {
         const msg = e.data || {};
-        if (msg.type === "progress") reportProgress(msg.info, onProgress);
+        if (msg.type === "progress") {
+          sawProgress = true;
+          reportProgress(msg.info, onProgress);
+        }
         if (msg.type === "ready") {
           worker = w;
           workerReady = true;
           workerInfo = { device: msg.device, dtype: msg.dtype, model: msg.model || MODEL };
           if (!settled) {
             settled = true;
+            clearTimeout(bootTimer);
             resolve(w);
           }
           return;
@@ -138,7 +148,11 @@ registerProcessor("palabra-capture", PalabraCapture);
         if (msg.type === "error" && !workerReady) fail(msg.message);
         if (worker === w) handleWorkerMsg(msg);
       };
-      w.postMessage({ type: "load", requestId: runId });
+      try {
+        w.postMessage({ type: "load", requestId: runId });
+      } catch (err) {
+        fail(err);
+      }
     });
   }
 
@@ -235,7 +249,7 @@ registerProcessor("palabra-capture", PalabraCapture);
     if (worker && workerReady) {
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
-        worker.postMessage({ type: "transcribe", id, audio: copy, language, partial: Boolean(partial) }, [copy.buffer]);
+        worker.postMessage({ type: "transcribe", id, audio: copy, language, partial: Boolean(partial) });
       });
     }
     if (!fallbackPipe) return Promise.reject(new Error("Modell ist noch nicht geladen."));
@@ -267,16 +281,16 @@ registerProcessor("palabra-capture", PalabraCapture);
 
   function pushVad(vad, frame) {
     const e = rms(frame);
-    const thresh = Math.max(0.012, vad.noise * 3.6);
+    const thresh = Math.max(0.008, vad.noise * 2.8);
     const voiced = e > thresh;
-    if (!voiced) vad.noise = vad.noise * 0.97 + e * 0.03;
+    if (!voiced) vad.noise = vad.noise * 0.95 + e * 0.05;
     vad.sample += frame.length;
     if (voiced) {
       vad.voice += 1;
       vad.silence = 0;
       if (!vad.started && vad.voice >= START_FRAMES) {
         vad.started = true;
-        vad.startSample = Math.max(0, vad.sample - frame.length * START_FRAMES - Math.round(0.08 * TARGET_RATE));
+        vad.startSample = Math.max(0, vad.sample - frame.length * START_FRAMES - Math.round(0.12 * TARGET_RATE));
       }
     } else {
       vad.voice = 0;
@@ -285,23 +299,7 @@ registerProcessor("palabra-capture", PalabraCapture);
     return { voiced, ended: vad.started && vad.silence >= END_FRAMES, energy: e };
   }
 
-  async function bindCapture(ac, stream, onFrame) {
-    const source = ac.createMediaStreamSource(stream);
-    const mute = ac.createGain();
-    mute.gain.value = 0;
-    if (ac.audioWorklet) {
-      if (!workletUrl) workletUrl = URL.createObjectURL(new Blob([WORKLET_SRC], { type: "text/javascript" }));
-      await ac.audioWorklet.addModule(workletUrl);
-      const node = new AudioWorkletNode(ac, "palabra-capture");
-      node.port.onmessage = (e) => onFrame(e.data);
-      source.connect(node);
-      node.connect(mute);
-      mute.connect(ac.destination);
-      return () => {
-        try { node.port.onmessage = null; node.disconnect(); } catch {}
-        try { source.disconnect(); mute.disconnect(); } catch {}
-      };
-    }
+  function bindScriptCapture(ac, source, mute, onFrame) {
     const proc = ac.createScriptProcessor(4096, 1, 1);
     let pos = 0;
     let prev = 0;
@@ -316,7 +314,7 @@ registerProcessor("palabra-capture", PalabraCapture);
         const i1 = Math.min(i0 + 1, ch.length - 1);
         const f = pos - i0;
         const raw = ch[i0] * (1 - f) + ch[i1] * f;
-        hp = raw - prev + 0.995 * hp;
+        hp = raw - prev + 0.97 * hp;
         prev = raw;
         out[oi++] = hp;
         if (oi >= FRAME) {
@@ -332,7 +330,57 @@ registerProcessor("palabra-capture", PalabraCapture);
     mute.connect(ac.destination);
     return () => {
       proc.onaudioprocess = null;
-      try { proc.disconnect(); source.disconnect(); mute.disconnect(); } catch {}
+      try { proc.disconnect(); } catch {}
+    };
+  }
+
+  async function bindCapture(ac, stream, onFrame) {
+    const source = ac.createMediaStreamSource(stream);
+    const mute = ac.createGain();
+    mute.gain.value = 0.0001;
+    let unbindWorklet = null;
+    let unbindScript = null;
+    let frames = 0;
+    const wrapped = (frame) => {
+      frames += 1;
+      onFrame(frame);
+    };
+
+    const startScript = () => {
+      if (unbindScript) return;
+      if (unbindWorklet) {
+        try { unbindWorklet(); } catch {}
+        unbindWorklet = null;
+      }
+      unbindScript = bindScriptCapture(ac, source, mute, wrapped);
+    };
+
+    if (ac.audioWorklet) {
+      try {
+        if (!workletUrl) workletUrl = URL.createObjectURL(new Blob([WORKLET_SRC], { type: "text/javascript" }));
+        await ac.audioWorklet.addModule(workletUrl);
+        const node = new AudioWorkletNode(ac, "palabra-capture");
+        node.port.onmessage = (e) => wrapped(e.data);
+        source.connect(node);
+        node.connect(mute);
+        mute.connect(ac.destination);
+        unbindWorklet = () => {
+          try { node.port.onmessage = null; node.disconnect(); } catch {}
+        };
+        setTimeout(() => {
+          if (frames < 2) startScript();
+        }, 320);
+      } catch {
+        startScript();
+      }
+    } else {
+      startScript();
+    }
+
+    return () => {
+      if (unbindWorklet) try { unbindWorklet(); } catch {}
+      if (unbindScript) try { unbindScript(); } catch {}
+      try { source.disconnect(); mute.disconnect(); } catch {}
     };
   }
 
@@ -387,9 +435,23 @@ registerProcessor("palabra-capture", PalabraCapture);
     let start = vad.started ? vad.startSample : 0;
     let end = used;
     if (vad.started) end = Math.max(start + MIN_SPEECH, used - FRAME * Math.min(vad.silence, END_FRAMES));
+    if (end - start < MIN_SPEECH && used >= MIN_SPEECH) {
+      start = 0;
+      end = used;
+    }
     const speechLen = Math.max(0, end - start);
-    if (!vad.started || speechLen < MIN_SPEECH) {
-      state.handlers.onError?.(new Error(reason || "Nichts gehört. Nochmal näher am Mikrofon."));
+    if (speechLen < MIN_SPEECH) {
+      state.handlers.onError?.(new Error(reason || "Nichts gehört. Näher am Mikrofon sprechen, dann Stopp tippen."));
+      recState = null;
+      return;
+    }
+    let peak = 0;
+    for (let i = start; i < start + speechLen; i += 32) {
+      const v = Math.abs(state.buffer[i]);
+      if (v > peak) peak = v;
+    }
+    if (peak < 0.012) {
+      state.handlers.onError?.(new Error(reason || "Nichts gehört. Näher am Mikrofon sprechen."));
       recState = null;
       return;
     }
@@ -402,6 +464,8 @@ registerProcessor("palabra-capture", PalabraCapture);
       recState = null;
     }, FINAL_TIMEOUT);
     try {
+      await ensure(state.handlers.onProgress);
+      if (aborted || id !== runId) return;
       const clip = state.buffer.subarray(start, start + speechLen);
       const msg = await transcribeAudio(clip, state.language, false);
       if (aborted || id !== runId) return;
@@ -444,14 +508,6 @@ registerProcessor("palabra-capture", PalabraCapture);
     }
     aborted = false;
     const id = ++runId;
-    handlers.onStatus?.("loading");
-    handlers.onProgress?.({
-      phase: "library",
-      pct: isReady() ? 100 : 0,
-      label: isReady() ? "Modell ist bereit." : "Bereite Whisper Base vor…"
-    });
-    await ensure(handlers.onProgress);
-    if (aborted || id !== runId) throw new Error("Abgebrochen.");
     handlers.onStatus?.("mic");
     handlers.onProgress?.({ phase: "mic", pct: 100, label: "Frage Mikrofon an…" });
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -505,7 +561,7 @@ registerProcessor("palabra-capture", PalabraCapture);
         finalize(state);
         return;
       }
-      if (state.vad.started) maybePartial(state);
+      if (state.vad.started && isReady()) maybePartial(state);
     };
     state.unbind = await bindCapture(ac, stream, onFrame);
     if (aborted || id !== runId) {
@@ -514,6 +570,13 @@ registerProcessor("palabra-capture", PalabraCapture);
     }
     handlers.onStatus?.("recording");
     handlers.onProgress?.({ phase: "listen", pct: 100, label: "Sprich jetzt. Ich höre zu…" });
+    if (!isReady()) {
+      handlers.onProgress?.({ phase: "library", pct: 0, label: "Modell lädt im Hintergrund…" });
+      ensure(handlers.onProgress).catch((err) => {
+        if (id !== runId) return;
+        handlers.onError?.(err);
+      });
+    }
     state.noSpeechTimer = setTimeout(() => {
       if (!state.capturing || state.vad.started) return;
       finalize(state, "Keine Sprache erkannt.");
