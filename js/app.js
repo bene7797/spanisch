@@ -1126,7 +1126,7 @@
           <h1>Nachsprechen</h1>
         </div>
         <div class="hero">
-          <div class="hero-kicker">Whisper Base · on-device</div>
+          <div class="hero-kicker">Whisper Tiny · kurze Wörter</div>
           <h2 data-load-title>${err ? "Download fehlgeschlagen" : speechLoadTitle(p)}</h2>
           <div class="progress"><span data-load-bar style="width:${Math.max(2, p.pct || 0)}%"></span></div>
           <div class="hero-meta"><span data-load-label>${esc(p.label || "Bitte warten…")}</span><span data-load-pct>${p.pct || 0}%</span></div>
@@ -1134,7 +1134,7 @@
         <div class="speech-steps">
           ${speechSteps(p)}
         </div>
-        <p class="muted" style="margin-top:16px">Einmalig ~${PalabraSpeech.info?.().modelMB || 80} MB, danach im Geräte-Cache. Keine Cloud, keine Audio-Uploads. Vorne Deutsch, du sagst ${esc(langOf(store).name)}.</p>
+        <p class="muted" style="margin-top:16px">Einmalig ~${PalabraSpeech.info?.().modelMB || 41} MB. Für einzelne Wörter und kurze Sätze, komplett on-device. Vorne Deutsch, du sagst ${esc(langOf(store).name)}.</p>
         ${err ? `<button class="btn btn-primary" data-act="retry-speech-model" style="margin-top:16px">Nochmal laden</button>` : ""}
         <button class="btn btn-ghost" data-act="cancel-speak-load" style="margin-top:12px">Abbrechen</button>
       </div>`;
@@ -1294,6 +1294,8 @@
     try {
       await PalabraSpeech.toggle({
         language: langOf(store).whisper,
+        expected: target,
+        maxTokens: Math.min(18, Math.max(8, String(target || "").trim().split(/\s+/).filter(Boolean).length * 3 + 4)),
         onProgress: (p) => {
           ui.speechStatus = p;
           if (ui.view === "speech-load") {

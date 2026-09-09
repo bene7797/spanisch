@@ -1,5 +1,5 @@
 const PalabraSpeech = (() => {
-  const MODEL = "Xenova/whisper-base";
+  const MODEL = "Xenova/whisper-tiny";
   const SRC = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2/+esm";
   const TARGET_RATE = 16000;
   const MAX_SECONDS = 6;
@@ -59,7 +59,7 @@ registerProcessor("palabra-capture", PalabraCapture);
   const fileProg = {};
 
   function modelBytes() {
-    return workerInfo.dtype === "fp16+q8" ? 95 : 77;
+    return 41;
   }
 
   function isReady() {
@@ -91,13 +91,13 @@ registerProcessor("palabra-capture", PalabraCapture);
       fileProg[info.file || file || "file"] = { loaded: info.loaded || 0, total: info.total || 1 };
       const pct = currentPct();
       const mb = info.total ? Math.round((info.loaded || 0) / 1048576) + " / " + Math.round(info.total / 1048576) + " MB" : "";
-      onProgress({ phase: "download", pct, label: "Lädt " + (file || "Whisper Base") + (mb ? " · " + mb : " · " + pct + "%") });
+      onProgress({ phase: "download", pct, label: "Lädt " + (file || "Whisper Tiny") + (mb ? " · " + mb : " · " + pct + "%") });
       return;
     }
     if (typeof info.progress === "number") {
       const raw = info.progress <= 1 ? info.progress * 100 : info.progress;
       const pct = Math.max(currentPct(), Math.round(raw));
-      onProgress({ phase: "download", pct, label: "Lädt Whisper Base… " + pct + "%" });
+      onProgress({ phase: "download", pct, label: "Lädt Whisper Tiny… " + pct + "%" });
       return;
     }
     if (status === "done") onProgress({ phase: "download", pct: Math.max(currentPct(), 90), label: "Datei im Cache gespeichert…" });
@@ -166,17 +166,18 @@ registerProcessor("palabra-capture", PalabraCapture);
     }
   }
 
-  function decodeOpts(language) {
+  function decodeOpts(language, maxTokens) {
     return {
       language: language || "spanish",
       task: "transcribe",
       return_timestamps: false,
-      max_new_tokens: 64,
+      max_new_tokens: Math.max(6, Math.min(18, maxTokens || 12)),
       num_beams: 1,
       do_sample: false,
       temperature: 0,
       top_k: 1,
-      condition_on_previous_text: false
+      condition_on_previous_text: false,
+      no_repeat_ngram_size: 3
     };
   }
 
@@ -197,7 +198,7 @@ registerProcessor("palabra-capture", PalabraCapture);
     });
     workerInfo = { device: "wasm", dtype: "q8", model: MODEL };
     try {
-      await fallbackPipe(new Float32Array(TARGET_RATE / 2), decodeOpts("spanish"));
+      await fallbackPipe(new Float32Array(TARGET_RATE / 2), decodeOpts("spanish", 8));
     } catch {}
   }
 
@@ -207,7 +208,7 @@ registerProcessor("palabra-capture", PalabraCapture);
       return true;
     }
     if (loading) return loading;
-    onProgress?.({ phase: "library", pct: 0, label: "Lade Whisper Base on-device…" });
+    onProgress?.({ phase: "library", pct: 0, label: "Lade Whisper Tiny on-device…" });
     loading = (async () => {
       Object.keys(fileProg).forEach((k) => delete fileProg[k]);
       try {
@@ -233,30 +234,45 @@ registerProcessor("palabra-capture", PalabraCapture);
     }
   }
 
-  function cleanTranscript(text) {
+  function tokenBudget(expected) {
+    const n = String(expected || "").trim().split(/\s+/).filter(Boolean).length;
+    return Math.min(18, Math.max(8, n * 3 + 4));
+  }
+
+  function cleanTranscript(text, maxWords) {
     let t = String(text || "").replace(/\s+/g, " ").trim();
     if (!t) return "";
-    if (/thanks for watching|amara\.org|please subscribe|subtitles by/i.test(t)) return "";
+    if (/thanks for watching|amara\.org|please subscribe|subtitles by|subtítulos|copyright/i.test(t)) return "";
+    t = t.replace(/\b(\S+)(\s+\1){2,}/gi, "$1");
+    t = t.split(/[.!?…]/)[0].trim();
+    const cap = Math.max(4, maxWords || 8);
+    const words = t.split(/\s+/).filter(Boolean);
+    if (words.length > cap) t = words.slice(0, cap).join(" ");
     return t;
   }
 
-  function transcribeAudio(audio, language, partial) {
+  function transcribeAudio(audio, language, partial, maxTokens) {
     const id = runId + "-" + Math.random().toString(36).slice(2, 8);
     const copy = audio.slice();
+    const tokens = tokenBudgetFromMax(maxTokens);
     if (worker && workerReady) {
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
-        worker.postMessage({ type: "transcribe", id, audio: copy, language, partial: Boolean(partial) });
+        worker.postMessage({ type: "transcribe", id, audio: copy, language, partial: Boolean(partial), maxTokens: tokens });
       });
     }
     if (!fallbackPipe) return Promise.reject(new Error("Modell ist noch nicht geladen."));
     const t0 = performance.now();
-    return fallbackPipe(copy, decodeOpts(language)).then((out) => ({
+    return fallbackPipe(copy, decodeOpts(language, tokens)).then((out) => ({
       text: String(out?.text || "").trim(),
       ms: Math.round(performance.now() - t0),
       partial: Boolean(partial),
       seconds: copy.length / TARGET_RATE
     }));
+  }
+
+  function tokenBudgetFromMax(maxTokens) {
+    return Math.max(6, Math.min(18, maxTokens || 12));
   }
 
   function rms(frame) {
@@ -448,9 +464,9 @@ registerProcessor("palabra-capture", PalabraCapture);
       await ensure(state.handlers.onProgress);
       if (aborted || id !== runId) return;
       const clip = state.buffer.subarray(start, start + speechLen);
-      const msg = await transcribeAudio(clip, state.language, false);
+      const msg = await transcribeAudio(clip, state.language, false, state.maxTokens);
       if (aborted || id !== runId) return;
-      const text = cleanTranscript(msg.text);
+      const text = cleanTranscript(msg.text, 8);
       state.handlers.onResult?.(text, { ms: msg.ms, seconds: msg.seconds, partial: false });
     } catch (err) {
       if (aborted || id !== runId) return;
@@ -489,6 +505,7 @@ registerProcessor("palabra-capture", PalabraCapture);
       id,
       handlers,
       language: handlers.language || "spanish",
+      maxTokens: handlers.maxTokens || tokenBudget(handlers.expected),
       stream,
       ac,
       buffer: new Float32Array(MAX_SAMPLES),
@@ -590,8 +607,8 @@ registerProcessor("palabra-capture", PalabraCapture);
       vad: true,
       sampleRate: TARGET_RATE,
       format: "pcm-f32-mono-16k",
-      streaming: "sliding-window-partials",
-      decoding: "greedy"
+      streaming: "utterance",
+      decoding: "greedy-short"
     };
   }
 

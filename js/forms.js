@@ -333,9 +333,16 @@ function scoreTyped(input, item) {
   return { quality: 0, note: "Richtig: " + expected };
 }
 
+function clipHeard(heard) {
+  const words = String(heard || "").trim().split(/\s+/).filter(Boolean);
+  if (words.length <= 8) return words.join(" ");
+  return words.slice(0, 8).join(" ");
+}
+
 function scoreSpoken(heard, item) {
   const expected = expectedSpanish(item);
-  const a = foldText(heard);
+  const clipped = clipHeard(heard);
+  const a = foldText(clipped);
   const b = foldText(expected);
   if (!a) return { ok: false, note: "Nichts erkannt." };
   if (a === b) return { ok: true, note: "Klingt gut: " + expected };
@@ -348,5 +355,5 @@ function scoreSpoken(heard, item) {
   const wordsB = b.split(" ").filter(Boolean);
   const hit = wordsB.filter((w) => w.length > 2 && wordsA.includes(w)).length;
   if (wordsB.length && hit / wordsB.length >= 0.7) return { ok: true, note: "Fast: " + expected };
-  return { ok: false, note: "Gehört: „" + heard.trim() + "“ · Ziel: " + expected };
+  return { ok: false, note: "Gehört: „" + clipped + "“ · Ziel: " + expected };
 }

@@ -1,4 +1,4 @@
-const CACHE = "palabra-v17";
+const CACHE = "palabra-v18";
 const ASSETS = [
   "./",
   "./index.html",

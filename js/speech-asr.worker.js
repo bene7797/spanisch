@@ -1,6 +1,6 @@
 import { pipeline, env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2/+esm";
 
-const MODEL = "Xenova/whisper-base";
+const MODEL = "Xenova/whisper-tiny";
 const SRC_RATE = 16000;
 
 let pipe = null;
@@ -101,17 +101,18 @@ async function load(requestId) {
   self.postMessage({ type: "ready", requestId, device, dtype, model: MODEL, cached: false });
 }
 
-function decodeOpts(language) {
+function decodeOpts(language, maxTokens) {
   return {
     language: language || "spanish",
     task: "transcribe",
     return_timestamps: false,
-    max_new_tokens: 64,
+    max_new_tokens: Math.max(6, Math.min(18, maxTokens || 12)),
     num_beams: 1,
     do_sample: false,
     temperature: 0,
     top_k: 1,
-    condition_on_previous_text: false
+    condition_on_previous_text: false,
+    no_repeat_ngram_size: 3
   };
 }
 
@@ -139,7 +140,7 @@ async function transcribe(msg) {
       self.postMessage({ type: "result", id, text: "", ms: 0, partial: Boolean(partial) });
       return;
     }
-    const out = await pipe(audio, decodeOpts(language));
+    const out = await pipe(audio, decodeOpts(language, msg.maxTokens));
     const text = String(out?.text || "").trim();
     self.postMessage({
       type: "result",
