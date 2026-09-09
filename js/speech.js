@@ -1,65 +1,76 @@
 const PalabraSpeech = (() => {
-  const MODEL = "Xenova/whisper-small";
+  const MODEL = "Xenova/whisper-base";
   const SRC = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2/+esm";
-  let pipe = null;
+  const TARGET_RATE = 16000;
+  const MAX_SECONDS = 6;
+  const MAX_SAMPLES = TARGET_RATE * MAX_SECONDS;
+  const FRAME = 512;
+  const START_FRAMES = 2;
+  const END_FRAMES = 14;
+  const MIN_SPEECH = Math.round(0.16 * TARGET_RATE);
+  const PARTIAL_AFTER = Math.round(0.7 * TARGET_RATE);
+  const PARTIAL_EVERY = 750;
+  const NO_SPEECH_MS = 4500;
+  const FINAL_TIMEOUT = 14000;
+
+  const WORKLET_SRC = `
+class PalabraCapture extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.ratio = sampleRate / ${TARGET_RATE};
+    this.pos = 0;
+    this.prev = 0;
+    this.hp = 0;
+    this.oi = 0;
+    this.out = new Float32Array(${FRAME});
+  }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (!ch) return true;
+    const ratio = this.ratio;
+    let pos = this.pos;
+    while (pos < ch.length) {
+      const i0 = pos | 0;
+      const i1 = i0 + 1 < ch.length ? i0 + 1 : i0;
+      const f = pos - i0;
+      const raw = ch[i0] * (1 - f) + ch[i1] * f;
+      this.hp = raw - this.prev + 0.995 * this.hp;
+      this.prev = raw;
+      this.out[this.oi++] = this.hp;
+      if (this.oi >= this.out.length) {
+        this.port.postMessage(this.out.slice());
+        this.oi = 0;
+      }
+      pos += ratio;
+    }
+    this.pos = pos - ch.length;
+    return true;
+  }
+}
+registerProcessor("palabra-capture", PalabraCapture);
+`;
+
+  let worker = null;
+  let workerReady = false;
+  let workerInfo = { device: "wasm", dtype: "q8", model: MODEL };
   let loading = null;
-  let rec = null;
-  let chunks = [];
-  let stream = null;
-  let timer = null;
-  let busyTimer = null;
-  let recording = false;
+  let fallbackPipe = null;
+  let recState = null;
   let runId = 0;
   let aborted = false;
+  let workletUrl = null;
   const fileProg = {};
 
-  function pickMime() {
-    const types = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
-    if (!window.MediaRecorder) return "";
-    return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
+  function modelBytes() {
+    return workerInfo.dtype === "fp16+q8" ? 95 : 77;
   }
 
-  function resample(data, fromRate, toRate) {
-    if (fromRate === toRate) return data;
-    const ratio = fromRate / toRate;
-    const out = new Float32Array(Math.round(data.length / ratio));
-    for (let i = 0; i < out.length; i++) {
-      const x = i * ratio;
-      const i0 = Math.floor(x);
-      const i1 = Math.min(i0 + 1, data.length - 1);
-      const f = x - i0;
-      out[i] = data[i0] * (1 - f) + data[i1] * f;
-    }
-    return out;
+  function isReady() {
+    return workerReady || Boolean(fallbackPipe);
   }
 
-  function reportProgress(info, onProgress) {
-    if (!onProgress || !info) return;
-    const file = String(info.file || info.name || "").split("/").pop();
-    const status = String(info.status || "");
-    if (status === "initiate") {
-      onProgress({
-        phase: "download",
-        pct: Object.keys(fileProg).length ? currentPct() : 1,
-        label: "Download startet" + (file ? ": " + file : "…")
-      });
-      return;
-    }
-    if (status === "download" || status === "progress" || (typeof info.loaded === "number" && typeof info.total === "number" && info.total > 0)) {
-      fileProg[info.file || file || "file"] = { loaded: info.loaded || 0, total: info.total || 1 };
-      const pct = currentPct();
-      const mb = info.total ? Math.round((info.loaded || 0) / 1048576) + " / " + Math.round(info.total / 1048576) + " MB" : "";
-      onProgress({ phase: "download", pct, label: "Lädt " + (file || "Whisper") + (mb ? " · " + mb : " · " + pct + "%") });
-      return;
-    }
-    if (typeof info.progress === "number") {
-      const raw = info.progress <= 1 ? info.progress * 100 : info.progress;
-      const pct = Math.max(currentPct(), Math.round(raw));
-      onProgress({ phase: "download", pct, label: status === "done" ? "Datei gespeichert…" : "Lädt Whisper… " + pct + "%" });
-      return;
-    }
-    if (status === "done") onProgress({ phase: "download", pct: Math.max(currentPct(), 90), label: "Datei im Cache gespeichert…" });
-    if (status === "ready") onProgress({ phase: "ready", pct: 100, label: "Modell ist bereit." });
+  function isRecording() {
+    return Boolean(recState?.capturing);
   }
 
   function currentPct() {
@@ -71,204 +82,500 @@ const PalabraSpeech = (() => {
     return Math.min(99, Math.round((100 * loaded) / total));
   }
 
-  async function blobToWave(blob) {
-    const buf = await blob.arrayBuffer();
-    const ac = new AudioContext();
-    const decoded = await ac.decodeAudioData(buf.slice(0));
-    let data = decoded.getChannelData(0);
-    if (decoded.numberOfChannels > 1) {
-      const right = decoded.getChannelData(1);
-      const mix = new Float32Array(data.length);
-      for (let i = 0; i < data.length; i++) mix[i] = (data[i] + right[i]) * 0.5;
-      data = mix;
+  function reportProgress(info, onProgress) {
+    if (!onProgress || !info) return;
+    const file = String(info.file || info.name || "").split("/").pop();
+    const status = String(info.status || "");
+    if (status === "initiate") {
+      onProgress({ phase: "download", pct: Object.keys(fileProg).length ? currentPct() : 1, label: "Download startet" + (file ? ": " + file : "…") });
+      return;
     }
-    data = resample(data, decoded.sampleRate, 16000);
-    if (ac.close) await ac.close();
-    return data;
+    if (status === "download" || status === "progress" || (typeof info.loaded === "number" && typeof info.total === "number" && info.total > 0)) {
+      fileProg[info.file || file || "file"] = { loaded: info.loaded || 0, total: info.total || 1 };
+      const pct = currentPct();
+      const mb = info.total ? Math.round((info.loaded || 0) / 1048576) + " / " + Math.round(info.total / 1048576) + " MB" : "";
+      onProgress({ phase: "download", pct, label: "Lädt " + (file || "Whisper Base") + (mb ? " · " + mb : " · " + pct + "%") });
+      return;
+    }
+    if (typeof info.progress === "number") {
+      const raw = info.progress <= 1 ? info.progress * 100 : info.progress;
+      const pct = Math.max(currentPct(), Math.round(raw));
+      onProgress({ phase: "download", pct, label: "Lädt Whisper Base… " + pct + "%" });
+      return;
+    }
+    if (status === "done") onProgress({ phase: "download", pct: Math.max(currentPct(), 90), label: "Datei im Cache gespeichert…" });
+    if (status === "ready") onProgress({ phase: "ready", pct: 100, label: "Modell ist bereit." });
   }
 
-  function isReady() {
-    return Boolean(pipe);
+  function workerUrl() {
+    return new URL("js/speech-asr.worker.js", document.baseURI);
+  }
+
+  function attachWorker(onProgress) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const w = new Worker(workerUrl(), { type: "module" });
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        try { w.terminate(); } catch {}
+        reject(err instanceof Error ? err : new Error(String(err)));
+      };
+      w.onerror = (e) => fail(e.message || "Worker fehlgeschlagen.");
+      w.onmessage = (e) => {
+        const msg = e.data || {};
+        if (msg.type === "progress") reportProgress(msg.info, onProgress);
+        if (msg.type === "ready") {
+          worker = w;
+          workerReady = true;
+          workerInfo = { device: msg.device, dtype: msg.dtype, model: msg.model || MODEL };
+          if (!settled) {
+            settled = true;
+            resolve(w);
+          }
+          return;
+        }
+        if (msg.type === "error" && !workerReady) fail(msg.message);
+        if (worker === w) handleWorkerMsg(msg);
+      };
+      w.postMessage({ type: "load", requestId: runId });
+    });
+  }
+
+  const pending = new Map();
+
+  function handleWorkerMsg(msg) {
+    if (msg.type === "result" || msg.type === "error" || msg.type === "skipped") {
+      const job = pending.get(msg.id);
+      if (!job) return;
+      if (msg.type === "skipped") return;
+      pending.delete(msg.id);
+      if (msg.type === "error") job.reject(new Error(msg.message || "Erkennung fehlgeschlagen."));
+      else job.resolve(msg);
+    }
+  }
+
+  function decodeOpts(language) {
+    return {
+      language: language || "spanish",
+      task: "transcribe",
+      return_timestamps: false,
+      max_new_tokens: 64,
+      num_beams: 1,
+      do_sample: false,
+      temperature: 0,
+      top_k: 1,
+      condition_on_previous_text: false
+    };
+  }
+
+  async function loadFallback(onProgress) {
+    const mod = await import(SRC);
+    const { pipeline, env } = mod;
+    env.allowLocalModels = false;
+    env.useBrowserCache = true;
+    env.allowRemoteModels = true;
+    if (env.backends?.onnx?.wasm) {
+      env.backends.onnx.wasm.proxy = true;
+      env.backends.onnx.wasm.simd = true;
+      env.backends.onnx.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 2) : 1;
+    }
+    fallbackPipe = await pipeline("automatic-speech-recognition", MODEL, {
+      dtype: "q8",
+      progress_callback: (info) => reportProgress(info, onProgress)
+    });
+    workerInfo = { device: "wasm", dtype: "q8", model: MODEL };
+    try {
+      await fallbackPipe(new Float32Array(TARGET_RATE / 2), decodeOpts("spanish"));
+    } catch {}
   }
 
   async function ensure(onProgress) {
-    if (pipe) {
-      onProgress?.({ phase: "ready", pct: 100, label: "Modell ist bereit." });
-      return pipe;
+    if (isReady()) {
+      onProgress?.({ phase: "ready", pct: 100, label: "Modell ist bereit · " + workerInfo.device.toUpperCase() + " · " + workerInfo.dtype });
+      return true;
     }
     if (loading) return loading;
-    onProgress?.({ phase: "library", pct: 0, label: "Lade Whisper-Bibliothek…" });
+    onProgress?.({ phase: "library", pct: 0, label: "Lade Whisper Base on-device…" });
     loading = (async () => {
       Object.keys(fileProg).forEach((k) => delete fileProg[k]);
-      const mod = await import(SRC);
-      const { pipeline, env } = mod;
-      if (env) {
-        env.allowLocalModels = false;
-        env.useBrowserCache = true;
-        env.allowRemoteModels = true;
-        if (env.backends?.onnx?.wasm) {
-          env.backends.onnx.wasm.proxy = true;
-        }
+      try {
+        await attachWorker(onProgress);
+      } catch {
+        onProgress?.({ phase: "library", pct: 8, label: "Worker nicht verfügbar – WASM-Fallback…" });
+        await loadFallback(onProgress);
       }
-      onProgress?.({ phase: "download", pct: 5, label: "Frage Modelldateien an (~240 MB)…" });
-      pipe = await pipeline("automatic-speech-recognition", MODEL, {
-        dtype: "q8",
-        progress_callback: (info) => reportProgress(info, onProgress)
+      onProgress?.({
+        phase: "ready",
+        pct: 100,
+        label: "Bereit · " + workerInfo.device.toUpperCase() + " · " + workerInfo.dtype + " · ~" + modelBytes() + " MB"
       });
-      onProgress?.({ phase: "ready", pct: 100, label: "Modell ist bereit." });
-      return pipe;
+      return true;
     })();
     try {
       return await loading;
     } catch (err) {
       loading = null;
-      pipe = null;
+      workerReady = false;
+      fallbackPipe = null;
       throw err;
     }
   }
 
-  function stopTracks() {
-    if (stream) {
-      stream.getTracks().forEach((t) => t.stop());
-      stream = null;
-    }
-    if (timer) {
-      clearTimeout(timer);
-      timer = null;
-    }
+  function cleanTranscript(text) {
+    let t = String(text || "").replace(/\s+/g, " ").trim();
+    if (!t) return "";
+    if (/thanks for watching|amara\.org|please subscribe|subtitles by/i.test(t)) return "";
+    return t;
   }
 
-  function isRecording() {
-    return recording;
+  function transcribeAudio(audio, language, partial) {
+    const id = runId + "-" + Math.random().toString(36).slice(2, 8);
+    const copy = audio.slice();
+    if (worker && workerReady) {
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        worker.postMessage({ type: "transcribe", id, audio: copy, language, partial: Boolean(partial) }, [copy.buffer]);
+      });
+    }
+    if (!fallbackPipe) return Promise.reject(new Error("Modell ist noch nicht geladen."));
+    const t0 = performance.now();
+    return fallbackPipe(copy, decodeOpts(language)).then((out) => ({
+      text: String(out?.text || "").trim(),
+      ms: Math.round(performance.now() - t0),
+      partial: Boolean(partial),
+      seconds: copy.length / TARGET_RATE
+    }));
   }
 
-  function clearBusyTimer() {
-    if (busyTimer) {
-      clearTimeout(busyTimer);
-      busyTimer = null;
+  function rms(frame) {
+    let s = 0;
+    for (let i = 0; i < frame.length; i++) s += frame[i] * frame[i];
+    return Math.sqrt(s / frame.length);
+  }
+
+  function createVad() {
+    return {
+      noise: 0.004,
+      started: false,
+      startSample: 0,
+      silence: 0,
+      voice: 0,
+      sample: 0
+    };
+  }
+
+  function pushVad(vad, frame) {
+    const e = rms(frame);
+    const thresh = Math.max(0.012, vad.noise * 3.6);
+    const voiced = e > thresh;
+    if (!voiced) vad.noise = vad.noise * 0.97 + e * 0.03;
+    vad.sample += frame.length;
+    if (voiced) {
+      vad.voice += 1;
+      vad.silence = 0;
+      if (!vad.started && vad.voice >= START_FRAMES) {
+        vad.started = true;
+        vad.startSample = Math.max(0, vad.sample - frame.length * START_FRAMES - Math.round(0.08 * TARGET_RATE));
+      }
+    } else {
+      vad.voice = 0;
+      if (vad.started) vad.silence += 1;
+    }
+    return { voiced, ended: vad.started && vad.silence >= END_FRAMES, energy: e };
+  }
+
+  async function bindCapture(ac, stream, onFrame) {
+    const source = ac.createMediaStreamSource(stream);
+    const mute = ac.createGain();
+    mute.gain.value = 0;
+    if (ac.audioWorklet) {
+      if (!workletUrl) workletUrl = URL.createObjectURL(new Blob([WORKLET_SRC], { type: "text/javascript" }));
+      await ac.audioWorklet.addModule(workletUrl);
+      const node = new AudioWorkletNode(ac, "palabra-capture");
+      node.port.onmessage = (e) => onFrame(e.data);
+      source.connect(node);
+      node.connect(mute);
+      mute.connect(ac.destination);
+      return () => {
+        try { node.port.onmessage = null; node.disconnect(); } catch {}
+        try { source.disconnect(); mute.disconnect(); } catch {}
+      };
+    }
+    const proc = ac.createScriptProcessor(4096, 1, 1);
+    let pos = 0;
+    let prev = 0;
+    let hp = 0;
+    const ratio = ac.sampleRate / TARGET_RATE;
+    const out = new Float32Array(FRAME);
+    let oi = 0;
+    proc.onaudioprocess = (ev) => {
+      const ch = ev.inputBuffer.getChannelData(0);
+      while (pos < ch.length) {
+        const i0 = pos | 0;
+        const i1 = Math.min(i0 + 1, ch.length - 1);
+        const f = pos - i0;
+        const raw = ch[i0] * (1 - f) + ch[i1] * f;
+        hp = raw - prev + 0.995 * hp;
+        prev = raw;
+        out[oi++] = hp;
+        if (oi >= FRAME) {
+          onFrame(out.slice());
+          oi = 0;
+        }
+        pos += ratio;
+      }
+      pos -= ch.length;
+    };
+    source.connect(proc);
+    proc.connect(mute);
+    mute.connect(ac.destination);
+    return () => {
+      proc.onaudioprocess = null;
+      try { proc.disconnect(); source.disconnect(); mute.disconnect(); } catch {}
+    };
+  }
+
+  function stopCapture(state) {
+    if (!state) return;
+    state.capturing = false;
+    if (state.timer) clearTimeout(state.timer);
+    if (state.noSpeechTimer) clearTimeout(state.noSpeechTimer);
+    if (state.busyTimer) clearTimeout(state.busyTimer);
+    if (state.unbind) {
+      try { state.unbind(); } catch {}
+      state.unbind = null;
+    }
+    if (state.stream) {
+      state.stream.getTracks().forEach((t) => t.stop());
+      state.stream = null;
+    }
+    if (state.ac) {
+      const ac = state.ac;
+      state.ac = null;
+      ac.close?.().catch?.(() => {});
     }
   }
 
   function cancel() {
     aborted = true;
     runId += 1;
-    recording = false;
-    clearBusyTimer();
-    const current = rec;
-    rec = null;
-    chunks = [];
-    if (current) {
-      current.ondataavailable = null;
-      current.onerror = null;
-      current.onstop = () => stopTracks();
-      try {
-        if (current.state !== "inactive") current.stop();
-      } catch {}
-    }
-    stopTracks();
+    pending.forEach((job) => job.reject(new Error("Abgebrochen.")));
+    pending.clear();
+    stopCapture(recState);
+    recState = null;
   }
 
-  async function transcribe(blob, onProgress, language, id) {
-    const p = await ensure(onProgress);
-    if (aborted || id !== runId) throw new Error("Abgebrochen.");
-    onProgress?.({ phase: "decode", pct: 100, label: "Wandle Aufnahme um…" });
-    const audio = await blobToWave(blob);
-    if (aborted || id !== runId) throw new Error("Abgebrochen.");
-    onProgress?.({ phase: "transcribe", pct: 100, label: "Erkenne Sprache…" });
-    const out = await p(audio, {
-      language: language || "spanish",
-      task: "transcribe",
-      return_timestamps: false
-    });
-    if (aborted || id !== runId) throw new Error("Abgebrochen.");
-    return String(out?.text || "").trim();
+  function killWorker() {
+    if (!worker) return;
+    try { worker.terminate(); } catch {}
+    worker = null;
+    workerReady = false;
+    loading = null;
+    pending.forEach((job) => job.reject(new Error("Abgebrochen.")));
+    pending.clear();
+  }
+
+  async function finalize(state, reason) {
+    if (!state || state.finalizing) return;
+    state.finalizing = true;
+    stopCapture(state);
+    const id = state.id;
+    if (aborted || id !== runId) return;
+    const vad = state.vad;
+    const used = Math.min(state.filled, MAX_SAMPLES);
+    let start = vad.started ? vad.startSample : 0;
+    let end = used;
+    if (vad.started) end = Math.max(start + MIN_SPEECH, used - FRAME * Math.min(vad.silence, END_FRAMES));
+    const speechLen = Math.max(0, end - start);
+    if (!vad.started || speechLen < MIN_SPEECH) {
+      state.handlers.onError?.(new Error(reason || "Nichts gehört. Nochmal näher am Mikrofon."));
+      recState = null;
+      return;
+    }
+    state.handlers.onStatus?.("busy");
+    state.handlers.onProgress?.({ phase: "transcribe", pct: 100, label: "Stabilisiere Ergebnis…" });
+    state.busyTimer = setTimeout(() => {
+      if (id !== runId) return;
+      killWorker();
+      state.handlers.onError?.(new Error("Erkennung hängt. Abgebrochen – nochmal versuchen."));
+      recState = null;
+    }, FINAL_TIMEOUT);
+    try {
+      const clip = state.buffer.subarray(start, start + speechLen);
+      const msg = await transcribeAudio(clip, state.language, false);
+      if (aborted || id !== runId) return;
+      const text = cleanTranscript(msg.text);
+      state.handlers.onResult?.(text, { ms: msg.ms, seconds: msg.seconds, partial: false });
+    } catch (err) {
+      if (aborted || id !== runId) return;
+      state.handlers.onError?.(err);
+    } finally {
+      if (state.busyTimer) clearTimeout(state.busyTimer);
+      if (recState === state) recState = null;
+    }
+  }
+
+  async function maybePartial(state) {
+    if (!state || state.finalizing || state.partialBusy) return;
+    if (!state.vad.started) return;
+    const now = performance.now();
+    if (now - state.lastPartialAt < PARTIAL_EVERY) return;
+    const used = Math.min(state.filled, MAX_SAMPLES);
+    const start = state.vad.startSample;
+    if (used - start < PARTIAL_AFTER) return;
+    state.partialBusy = true;
+    state.lastPartialAt = now;
+    try {
+      const clip = state.buffer.subarray(start, used);
+      const msg = await transcribeAudio(clip, state.language, true);
+      if (aborted || state.id !== runId || state.finalizing) return;
+      const text = cleanTranscript(msg.text);
+      if (text) state.handlers.onPartial?.(text, { ms: msg.ms });
+    } catch {
+    } finally {
+      if (state) state.partialBusy = false;
+    }
   }
 
   async function start(handlers) {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error("Kein Mikrofon-Zugriff in diesem Browser.");
     }
-    if (!window.MediaRecorder) {
-      throw new Error("Aufnahme klappt hier nicht. Chrome oder Safari aktuell nutzen.");
-    }
     aborted = false;
     const id = ++runId;
     handlers.onStatus?.("loading");
-    handlers.onProgress?.({ phase: "library", pct: pipe ? 100 : 0, label: pipe ? "Modell ist bereit." : "Bereite Whisper vor…" });
+    handlers.onProgress?.({
+      phase: "library",
+      pct: isReady() ? 100 : 0,
+      label: isReady() ? "Modell ist bereit." : "Bereite Whisper Base vor…"
+    });
     await ensure(handlers.onProgress);
     if (aborted || id !== runId) throw new Error("Abgebrochen.");
     handlers.onStatus?.("mic");
     handlers.onProgress?.({ phase: "mic", pct: 100, label: "Frage Mikrofon an…" });
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+        sampleRate: TARGET_RATE
+      }
     });
     if (aborted || id !== runId) {
-      stopTracks();
+      stream.getTracks().forEach((t) => t.stop());
       throw new Error("Abgebrochen.");
     }
-    chunks = [];
-    const mime = pickMime();
-    rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-    rec.ondataavailable = (e) => {
-      if (e.data && e.data.size) chunks.push(e.data);
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) throw new Error("AudioContext fehlt in diesem Browser.");
+    const ac = new Ctx({ sampleRate: TARGET_RATE });
+    if (ac.state === "suspended") await ac.resume();
+    const state = {
+      id,
+      handlers,
+      language: handlers.language || "spanish",
+      stream,
+      ac,
+      buffer: new Float32Array(MAX_SAMPLES),
+      filled: 0,
+      vad: createVad(),
+      capturing: true,
+      finalizing: false,
+      partialBusy: false,
+      lastPartialAt: 0,
+      unbind: null,
+      timer: null,
+      noSpeechTimer: null,
+      busyTimer: null
     };
-    rec.onerror = () => {
-      recording = false;
-      stopTracks();
-      handlers.onError?.(new Error("Aufnahme fehlgeschlagen."));
-    };
-    rec.onstop = async () => {
-      recording = false;
-      const mimeType = rec.mimeType || mime || "audio/webm";
-      rec = null;
-      stopTracks();
-      const blob = new Blob(chunks, { type: mimeType });
-      chunks = [];
-      if (aborted || id !== runId) return;
-      if (!blob.size) {
-        handlers.onError?.(new Error("Nichts aufgenommen."));
+    recState = state;
+    const onFrame = (frame) => {
+      if (!state.capturing || state.id !== runId) return;
+      const room = MAX_SAMPLES - state.filled;
+      if (room <= 0) {
+        finalize(state, "Zeit vorbei.");
         return;
       }
-      handlers.onStatus?.("busy");
-      clearBusyTimer();
-      busyTimer = setTimeout(() => {
-        if (id !== runId) return;
-        cancel();
-        handlers.onError?.(new Error("Erkennung hängt. Abgebrochen – nochmal versuchen oder die Runde beenden."));
-      }, 20000);
-      try {
-        const text = await transcribe(blob, handlers.onProgress, handlers.language, id);
-        if (aborted || id !== runId) return;
-        handlers.onResult?.(text);
-      } catch (err) {
-        if (aborted || id !== runId) return;
-        handlers.onError?.(err);
-      } finally {
-        if (id === runId) clearBusyTimer();
+      const n = Math.min(frame.length, room);
+      state.buffer.set(n === frame.length ? frame : frame.subarray(0, n), state.filled);
+      state.filled += n;
+      const ev = pushVad(state.vad, n === frame.length ? frame : frame.subarray(0, n));
+      if (ev.ended) {
+        finalize(state);
+        return;
       }
+      if (state.vad.started) maybePartial(state);
     };
-    recording = true;
-    rec.start(250);
+    state.unbind = await bindCapture(ac, stream, onFrame);
+    if (aborted || id !== runId) {
+      stopCapture(state);
+      throw new Error("Abgebrochen.");
+    }
     handlers.onStatus?.("recording");
-    timer = setTimeout(() => {
-      if (recording) stop();
-    }, 6000);
+    handlers.onProgress?.({ phase: "listen", pct: 100, label: "Sprich jetzt. Ich höre zu…" });
+    state.noSpeechTimer = setTimeout(() => {
+      if (!state.capturing || state.vad.started) return;
+      finalize(state, "Keine Sprache erkannt.");
+    }, NO_SPEECH_MS);
+    state.timer = setTimeout(() => {
+      if (state.capturing) finalize(state);
+    }, MAX_SECONDS * 1000);
   }
 
   function stop() {
-    if (!rec) return;
-    try {
-      if (rec.state !== "inactive") rec.stop();
-    } catch {}
+    if (recState?.capturing) finalize(recState);
   }
 
   async function toggle(handlers) {
-    if (recording) {
+    if (recState?.capturing) {
       stop();
+      return;
+    }
+    if (recState?.finalizing) {
+      cancel();
       return;
     }
     await start(handlers);
   }
 
-  return { ensure, toggle, cancel, isRecording, isReady, stop };
+  async function benchmark() {
+    await ensure();
+    const seconds = [0.8, 1.6, 2.4];
+    const rows = [];
+    for (const s of seconds) {
+      const audio = new Float32Array(Math.round(s * TARGET_RATE));
+      for (let i = 0; i < audio.length; i++) audio[i] = Math.sin(2 * Math.PI * 180 * i / TARGET_RATE) * 0.12;
+      const msg = await transcribeAudio(audio, "spanish", false);
+      const rtf = msg.ms / (s * 1000);
+      rows.push({ seconds: s, ms: msg.ms, rtf: Number(rtf.toFixed(2)), text: msg.text || "" });
+    }
+    const ram = performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null;
+    return {
+      model: MODEL,
+      device: workerInfo.device,
+      dtype: workerInfo.dtype,
+      modelMB: modelBytes(),
+      ramMB: ram,
+      isolated: Boolean(window.crossOriginIsolated),
+      rows
+    };
+  }
+
+  function info() {
+    return {
+      model: MODEL,
+      device: workerInfo.device,
+      dtype: workerInfo.dtype,
+      modelMB: modelBytes(),
+      ready: isReady(),
+      vad: true,
+      sampleRate: TARGET_RATE,
+      format: "pcm-f32-mono-16k",
+      streaming: "sliding-window-partials",
+      decoding: "greedy"
+    };
+  }
+
+  return { ensure, toggle, cancel, isRecording, isReady, stop, benchmark, info };
 })();

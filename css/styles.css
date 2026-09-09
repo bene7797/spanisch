@@ -842,10 +842,11 @@ a { color: inherit; }
 }
 .listen-note {
   text-align: center;
-  font-size: 13px;
+  font-size: 15px;
   line-height: 1.35;
   color: var(--terracotta-deep);
   margin: 4px 0 8px;
+  min-height: 1.35em;
 }
 .mic-btn {
   width: 100%;

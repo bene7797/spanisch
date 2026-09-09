@@ -1125,7 +1125,7 @@
           <h1>Nachsprechen</h1>
         </div>
         <div class="hero">
-          <div class="hero-kicker">Whisper Small</div>
+          <div class="hero-kicker">Whisper Base · on-device</div>
           <h2 data-load-title>${err ? "Download fehlgeschlagen" : speechLoadTitle(p)}</h2>
           <div class="progress"><span data-load-bar style="width:${Math.max(2, p.pct || 0)}%"></span></div>
           <div class="hero-meta"><span data-load-label>${esc(p.label || "Bitte warten…")}</span><span data-load-pct>${p.pct || 0}%</span></div>
@@ -1133,7 +1133,7 @@
         <div class="speech-steps">
           ${speechSteps(p)}
         </div>
-        <p class="muted" style="margin-top:16px">Einmalig ~240 MB. Danach bleibt Whisper auf dem Gerät. Vorne Deutsch, du sagst ${esc(langOf(store).name)}.</p>
+        <p class="muted" style="margin-top:16px">Einmalig ~${PalabraSpeech.info?.().modelMB || 80} MB, danach im Geräte-Cache. Keine Cloud, keine Audio-Uploads. Vorne Deutsch, du sagst ${esc(langOf(store).name)}.</p>
         ${err ? `<button class="btn btn-primary" data-act="retry-speech-model" style="margin-top:16px">Nochmal laden</button>` : ""}
         <button class="btn btn-ghost" data-act="cancel-speak-load" style="margin-top:12px">Abbrechen</button>
       </div>`;
@@ -1173,11 +1173,11 @@
       loading: "Bereite Whisper vor",
       mic: "Frage Mikrofon an",
       recording: "Hört zu",
-      busy: "Wertet Aufnahme aus"
+      busy: "Stabilisiert"
     };
     const label =
       p.label ||
-      (phase === "loading" ? "Lädt oder öffnet das Modell…" : phase === "mic" ? "Browser fragt Mikrofon-Erlaubnis…" : phase === "recording" ? "Sprich jetzt." : phase === "busy" ? "Erkenne mit Whisper…" : "");
+      (phase === "loading" ? "Lädt oder öffnet das Modell…" : phase === "mic" ? "Browser fragt Mikrofon-Erlaubnis…" : phase === "recording" ? "Sprich jetzt – Ergebnis kommt live." : phase === "busy" ? "Mache den Text fertig…" : "");
     return `<div class="speech-live" data-phase="${esc(phase)}">
       <div class="speech-live-top">
         <b>${titles[phase] || "Status"}</b>
@@ -1192,7 +1192,7 @@
     if (ui.speechPhase === "loading") return "Lädt Modell… Tippen bricht ab";
     if (ui.speechPhase === "mic") return "Frage Mikrofon an… Tippen bricht ab";
     if (ui.speechPhase === "recording") return "Stopp · ich höre zu";
-    if (ui.speechPhase === "busy") return "Abbrechen · hängt beim Erkennen";
+    if (ui.speechPhase === "busy") return "Abbrechen · wertet aus";
     return "🎙 " + langOf(store).name + " sagen";
   }
 
@@ -1288,8 +1288,27 @@
           if (phase === "loading") setListenNote("Whisper wird geladen oder aus dem Cache geholt…");
           if (phase === "mic") setListenNote("Frage Mikrofon an…");
           if (phase === "recording") setListenNote("Sprich jetzt auf " + langOf(store).name + ".");
-          if (phase === "busy") setListenNote("Wandle um und erkenne mit Whisper…");
+          if (phase === "busy") setListenNote("Stabilisiere den Text…");
           render();
+        },
+        onPartial: (text) => {
+          if (!text) return;
+          const shown = "„" + text + "“";
+          setListenNote(shown);
+          const live = app.querySelector(".speech-live p");
+          const note = app.querySelector(".listen-note");
+          if (live) live.textContent = shown;
+          if (note) note.textContent = shown;
+          else if (ui.session && !ui.session.answered) {
+            const card = app.querySelector(".study-speak") || app;
+            const slot = card.querySelector(".mic-btn");
+            if (slot && !card.querySelector(".listen-note")) {
+              const p = document.createElement("p");
+              p.className = "listen-note";
+              p.textContent = shown;
+              slot.before(p);
+            }
+          }
         },
         onResult: (text) => {
           ui.speechPhase = "idle";
