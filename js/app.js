@@ -21,7 +21,8 @@
     modelProgress: { pct: 0, label: "" },
     catId: null,
     addForm: { de: "", word: "", pos: "n" },
-    translate: { input: "", output: "", note: "", busy: false, error: "", engine: "" }
+    translate: { input: "", output: "", note: "", busy: false, error: "", engine: "" },
+    chat: null
   };
 
   let drag = null;
@@ -61,6 +62,7 @@
     ui.speechPhase = "idle";
     ui.session = null;
     ui.translate = { ...ui.translate, output: "", note: "", error: "", engine: "" };
+    ui.chat = null;
     store.lang = next;
     store.unlockedLevel = langUnlocked(store);
     store.streak = store.streaks?.[next] || 0;
@@ -507,6 +509,10 @@
         </div>
         ${installBanner()}
         ${ui.toast ? `<p class="muted small" style="margin-top:12px">${esc(ui.toast)}</p>` : ""}
+        <button class="tile tile-wide" data-go="chat">
+          <div class="emoji">💬</div>
+          <div><h3>Gespräch</h3><p>Frei ${langOf(store).name} sprechen, KI antwortet</p></div>
+        </button>
         <button class="tile tile-wide" data-go="translate">
           <div class="emoji">⇄</div>
           <div><h3>Übersetzen</h3><p>Deutsch eingeben, anhören, nachsprechen</p></div>
@@ -536,6 +542,10 @@
           <button class="tile" data-act="start" data-mode="grammar"><h3>Grammatik</h3><p>${dueCount("grammar")}</p></button>
           <button class="tile" data-act="start" data-mode="mixed"><h3>Gemischt</h3><p>${dueCount("mixed")}</p></button>
         </div>
+        <button class="tile tile-wide" data-go="chat">
+          <div class="emoji">💬</div>
+          <div><h3>Gespräch</h3><p>Unterhalten auf ${langOf(store).name}</p></div>
+        </button>
         <button class="tile tile-wide" data-go="translate">
           <div class="emoji">⇄</div>
           <div><h3>Übersetzen</h3><p>Frei tippen, anhören, nachsprechen</p></div>
@@ -967,10 +977,16 @@
               ${[8, 12, 16, 24].map((n) => `<option ${store.sessionSize === n ? "selected" : ""}>${n}</option>`).join("")}
             </select>
           </label>
+          </label>
+        </div>
+        <div class="settings-card" style="margin-top:12px">
+          <label class="field">Gemini-Key fürs Gespräch (optional)
+            <input class="type-input" data-act="gemini-key" type="password" autocomplete="off" placeholder="kostenlos bei Google AI Studio" value="${esc(store.geminiKey || "")}" />
+          </label>
         </div>
         <button class="btn ${store.reminders ? "btn-primary" : "btn-ghost"}" data-act="reminders" style="margin-bottom:12px">${store.reminders ? "Erinnerungen an" : "Erinnerungen einschalten"}</button>
         ${ui.toast ? `<p class="muted small" style="margin-bottom:12px">${esc(ui.toast)}</p>` : ""}
-        <p class="muted small" style="margin-bottom:12px">Richtung und Sprache liegen auch auf der Startseite. Tippen ist optional. Nachsprechen bleibt ein eigener Modus.</p>
+        <p class="muted small" style="margin-bottom:12px">Richtung und Sprache liegen auch auf der Startseite. Tippen ist optional. Nachsprechen bleibt ein eigener Modus. Fürs Gespräch reicht oft der freie Dienst; wenn der streikt, hilft ein kostenloser Gemini-Key aus Google AI Studio.</p>
         <button class="btn btn-ghost danger" data-act="reset">Fortschritt löschen</button>
       </div>`;
   }
@@ -1187,6 +1203,209 @@
       </div>`;
   }
 
+  function emptyChat() {
+    const it = store.lang === "it";
+    const hello = it
+      ? "Ciao! Parliamo un po' in italiano. Come stai oggi?"
+      : "¡Hola! Hablemos un poco en español. ¿Qué tal estás hoy?";
+    return {
+      messages: [{ id: "hi", role: "assistant", text: hello }],
+      busy: false,
+      error: "",
+      draft: "",
+      status: ""
+    };
+  }
+
+  function ensureChat() {
+    if (!ui.chat || !Array.isArray(ui.chat.messages) || !ui.chat.messages.length) ui.chat = emptyChat();
+    return ui.chat;
+  }
+
+  function chatLevelLabel() {
+    const lv = langUnlocked(store);
+    if (lv <= 1) return "A1";
+    if (lv === 2) return "A2";
+    if (lv === 3) return "B1";
+    return "B1+";
+  }
+
+  function chatSystemPrompt() {
+    const L = langOf(store);
+    const level = chatLevelLabel();
+    if (L.id === "it") {
+      return "Sei un compagno di conversazione paziente per chi impara l'italiano (livello " + level + "). Rispondi SEMPRE in italiano, in 1-3 frasi corte, vocabolario semplice. Se l'allievo sbaglia, riformula una volta la frase corretta in modo gentile e continua. Non usare il tedesco, tranne se chiede una traduzione. Chiudi con una domanda breve.";
+    }
+    return "Eres un compañero de conversación paciente para alguien que aprende español (nivel " + level + "). Responde SIEMPRE en español, en 1-3 frases cortas, vocabulario sencillo. Si el alumno se equivoca, reformula una vez la frase correcta con amabilidad y sigue. No uses alemán salvo si pide traducción. Termina con una pregunta corta.";
+  }
+
+  function chatReplyText(data) {
+    if (!data) return "";
+    if (typeof data === "string") return data.trim();
+    const choice = data.choices?.[0]?.message?.content;
+    if (choice) return String(choice).trim();
+    if (data.candidates?.[0]?.content?.parts) {
+      return data.candidates[0].content.parts.map((p) => p.text || "").join("").trim();
+    }
+    return String(data.text || data.response || "").trim();
+  }
+
+  async function geminiChat(key, messages) {
+    const system = messages.find((m) => m.role === "system")?.content || "";
+    const contents = messages
+      .filter((m) => m.role !== "system")
+      .map((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }]
+      }));
+    const models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"];
+    let lastErr = null;
+    for (const model of models) {
+      try {
+        const res = await fetch(
+          "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + encodeURIComponent(key),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              systemInstruction: { parts: [{ text: system }] },
+              contents,
+              generationConfig: { temperature: 0.7, maxOutputTokens: 180 }
+            })
+          }
+        );
+        const data = await res.json();
+        if (!res.ok) {
+          lastErr = new Error(data?.error?.message || "Gemini " + res.status);
+          continue;
+        }
+        const text = chatReplyText(data);
+        if (text) return text;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr || new Error("Gemini hat nicht geantwortet.");
+  }
+
+  async function pollinationsChat(messages) {
+    const res = await fetch("https://text.pollinations.ai/openai", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ model: "openai", messages })
+    });
+    const raw = await res.text();
+    if (res.ok) {
+      try {
+        const text = chatReplyText(JSON.parse(raw));
+        if (text) return text;
+      } catch {
+        if (raw.trim() && raw[0] !== "{") return raw.trim();
+      }
+    }
+    const last = messages.filter((m) => m.role === "user").pop()?.content || "Hola";
+    const sys = messages.find((m) => m.role === "system")?.content || "";
+    const prompt = sys + "\n\nUsuario: " + last + "\nAsistente:";
+    const res2 = await fetch("https://text.pollinations.ai/" + encodeURIComponent(prompt));
+    const raw2 = await res2.text();
+    if (!res2.ok) throw new Error("Gesprächsdienst gerade nicht erreichbar.");
+    try {
+      const text = chatReplyText(JSON.parse(raw2));
+      if (text) return text;
+    } catch {
+      if (raw2.trim() && raw2[0] !== "{") return raw2.trim();
+    }
+    throw new Error("Keine Antwort bekommen.");
+  }
+
+  async function completeChat(history) {
+    const messages = [{ role: "system", content: chatSystemPrompt() }].concat(
+      history.slice(-12).map((m) => ({ role: m.role, content: m.text }))
+    );
+    const key = String(store.geminiKey || "").trim();
+    if (key) {
+      try {
+        return await geminiChat(key, messages);
+      } catch {}
+    }
+    return pollinationsChat(messages);
+  }
+
+  async function sendChatUtterance(text) {
+    const said = String(text || "").trim();
+    if (!said) {
+      ensureChat().status = "Nichts erkannt. Nochmal sprechen oder tippen.";
+      ui.speechPhase = "idle";
+      render();
+      return;
+    }
+    const chat = ensureChat();
+    if (chat.busy) return;
+    chat.messages.push({ id: "u" + Date.now(), role: "user", text: said });
+    chat.busy = true;
+    chat.error = "";
+    chat.status = "Die KI antwortet…";
+    chat.draft = "";
+    ui.speechPhase = "idle";
+    render();
+    try {
+      const reply = await completeChat(chat.messages);
+      if (ui.view !== "chat") return;
+      chat.messages.push({ id: "a" + Date.now(), role: "assistant", text: reply });
+      chat.busy = false;
+      chat.status = "";
+      render();
+      speak(reply);
+    } catch (err) {
+      if (ui.view !== "chat") return;
+      chat.busy = false;
+      chat.error =
+        err?.message ||
+        "Keine KI-Antwort. In den Einstellungen kannst du einen kostenlosen Gemini-Key eintragen.";
+      chat.status = "";
+      render();
+    }
+  }
+
+  function sendChatDraft() {
+    const box = app.querySelector("[data-chat='draft']");
+    const text = box ? box.value : ensureChat().draft;
+    sendChatUtterance(text);
+  }
+
+  function renderChat() {
+    const chat = ensureChat();
+    const L = langOf(store);
+    const rec = ui.speechPhase !== "idle";
+    const locked = chat.busy || rec;
+    return `
+      <div class="screen no-nav chat-screen">
+        <div class="topbar">
+          <button class="icon-btn" data-go="home">←</button>
+          <h1>Gespräch</h1>
+          <button class="tool-btn" data-act="chat-reset" ${locked ? "disabled" : ""}>Neu</button>
+        </div>
+        <p class="muted small">Sprich auf ${esc(L.name)}. Dieselbe Erkennung wie beim Nachsprechen, die KI antwortet und liest vor.</p>
+        <div class="chat-log">
+          ${chat.messages
+            .map((m) => {
+              const say = m.role === "assistant" ? ` data-act="speak" data-say="${esc(m.text)}"` : "";
+              return `<div class="chat-bubble ${m.role}"${say}>${esc(m.text)}</div>`;
+            })
+            .join("")}
+          ${chat.busy ? `<div class="chat-bubble assistant pending">…</div>` : ""}
+        </div>
+        ${speechStatusCard()}
+        <p class="listen-note">${esc(chat.status || chat.error || "")}</p>
+        <div class="chat-compose">
+          <textarea class="type-input chat-draft" data-chat="draft" rows="2" placeholder="${esc(L.name)} tippen…" ${locked ? "disabled" : ""}>${esc(chat.draft)}</textarea>
+          <button class="icon-btn send-btn" data-act="chat-send" ${locked || !String(chat.draft || "").trim() ? "disabled" : ""} title="Senden">➤</button>
+        </div>
+        <button class="mic-btn ${ui.speechPhase === "recording" ? "rec-on" : ""} ${ui.speechPhase === "busy" ? "busy-on" : ""}" data-act="chat-listen" ${chat.busy ? "disabled" : ""}>${speechBtnLabel()}</button>
+        ${rec ? `<button class="btn btn-ghost" data-act="cancel-listen" style="margin-top:10px">Erkennung abbrechen</button>` : ""}
+      </div>`;
+  }
+
   function render() {
     if (ui.view !== "home" && ui.view !== "settings" && ui.view !== "add-word" && ui.view !== "vocab-cats") ui.toast = "";
     document.body.dataset.lang = store.lang || "es";
@@ -1204,7 +1423,8 @@
       "speech-load": renderSpeechLoad,
       "vocab-cats": renderVocabCats,
       "add-word": renderAddWord,
-      translate: renderTranslate
+      translate: renderTranslate,
+      chat: renderChat
     };
     app.innerHTML = (map[ui.view] || renderHome)();
     const screen = app.querySelector(".screen");
@@ -1306,6 +1526,7 @@
     if (ui.speechPhase === "recording") return compact ? "Stopp" : "Stopp · ich höre zu";
     if (ui.speechPhase === "busy") return compact ? "Warten…" : "Bitte warten…";
     if (isSpeakMode() && ui.session?.speakQuality != null) return compact ? "🎙 Nochmal" : "🎙 Nochmal versuchen";
+    if (ui.view === "chat") return compact ? "🎙 Sprechen" : "🎙 Auf " + langOf(store).name + " antworten";
     return compact ? "🎙 Sagen" : "🎙 " + langOf(store).name + " sagen";
   }
 
@@ -1350,6 +1571,8 @@
     else if (ui.view === "translate") {
       ui.translate = ui.translate || {};
       ui.translate.note = msg;
+    } else if (ui.view === "chat") {
+      ensureChat().status = msg;
     } else if (ui.session) ui.session.listenNote = msg;
   }
 
@@ -1401,21 +1624,27 @@
     }
   }
 
-  async function startListen(expectedSay) {
+  async function startListen(expectedSay, opts = {}) {
     const now = Date.now();
     if (now < listenGuardUntil) return;
     if (ui.speechPhase === "loading" || ui.speechPhase === "mic" || ui.speechPhase === "busy") return;
+    const free = Boolean(opts.free || ui.view === "chat");
     const item = currentItem();
-    const target =
-      expectedSay ||
-      (ui.view === "translate" ? ui.translate?.output : "") ||
-      (item ? spokenTarget(item) : "");
+    const target = free
+      ? ""
+      : expectedSay ||
+        (ui.view === "translate" ? ui.translate?.output : "") ||
+        (item ? spokenTarget(item) : "");
     const probe = item && ui.view === "study" ? item : { es: target, pos: "phr" };
     listenGuardUntil = now + 1000;
     try {
       await PalabraSpeech.toggle({
         language: langOf(store).whisper,
         expected: target,
+        maxTokens: free ? 64 : undefined,
+        maxSeconds: free ? 12 : undefined,
+        maxWords: free ? 40 : undefined,
+        keepSentences: free,
         onProgress: (p) => {
           ui.speechStatus = p;
           if (ui.view === "speech-load") {
@@ -1450,6 +1679,10 @@
         },
         onResult: (text) => {
           ui.speechPhase = "idle";
+          if (free && ui.view === "chat") {
+            sendChatUtterance(text);
+            return;
+          }
           const scored = scoreSpoken(text, probe);
           setListenNote(scored.note);
           if (isSpeakMode() && ui.session && !ui.session.answered) {
@@ -1527,13 +1760,24 @@
 
   function afterRender() {
     updateBadge();
-    const input = app.querySelector(".type-input");
+    const input = app.querySelector("[data-type-input]");
     if (input) {
       input.focus();
       input.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
           e.preventDefault();
           submitTyped();
+        }
+      });
+    }
+    const log = app.querySelector(".chat-log");
+    if (log) log.scrollTop = log.scrollHeight;
+    const chatIn = app.querySelector("[data-chat='draft']");
+    if (chatIn) {
+      chatIn.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          sendChatDraft();
         }
       });
     }
@@ -1662,6 +1906,16 @@
     } else if (act === "listen-say") {
       e.stopPropagation();
       startListen(t.dataset.say);
+    } else if (act === "chat-listen") {
+      e.stopPropagation();
+      startListen("", { free: true });
+    } else if (act === "chat-send") {
+      sendChatDraft();
+    } else if (act === "chat-reset") {
+      PalabraSpeech.cancel();
+      ui.speechPhase = "idle";
+      ui.chat = emptyChat();
+      render();
     } else if (act === "open-dialog") {
       ui.dialogId = t.dataset.dialog;
       ui.dialogLine = 0;
@@ -1755,6 +2009,10 @@
     if (t.dataset.act === "lang") {
       switchLang(t.value);
     }
+    if (t.dataset.act === "gemini-key") {
+      store.geminiKey = t.value.trim();
+      persist();
+    }
     if (t.dataset.add === "pos") {
       ui.addForm = ui.addForm || {};
       ui.addForm.pos = t.value;
@@ -1768,6 +2026,11 @@
       ui.translate.input = e.target.value;
       const btn = app.querySelector("[data-act='do-translate']");
       if (btn) btn.disabled = ui.translate.busy || !String(e.target.value).trim();
+    }
+    if (e.target.dataset.chat === "draft") {
+      ensureChat().draft = e.target.value;
+      const btn = app.querySelector("[data-act='chat-send']");
+      if (btn) btn.disabled = ensureChat().busy || ui.speechPhase !== "idle" || !String(e.target.value).trim();
     }
     if (e.target.dataset.add && e.target.dataset.add !== "pos") {
       ui.addForm = ui.addForm || { de: "", word: "", pos: "n" };

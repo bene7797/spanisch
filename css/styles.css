@@ -351,6 +351,65 @@ a { color: inherit; }
   line-height: 1.4;
 }
 
+.chat-screen {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
+}
+.chat-screen .chat-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 0;
+  -webkit-overflow-scrolling: touch;
+}
+.chat-bubble {
+  max-width: 88%;
+  padding: 12px 14px;
+  border-radius: 18px;
+  font-size: 16px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+.chat-bubble.user {
+  align-self: flex-end;
+  background: var(--ink);
+  color: #fffaf3;
+  border-bottom-right-radius: 6px;
+}
+.chat-bubble.assistant {
+  align-self: flex-start;
+  background: var(--paper);
+  box-shadow: 0 1px 0 var(--line);
+  border-bottom-left-radius: 6px;
+  cursor: pointer;
+}
+.chat-bubble.pending { opacity: 0.6; }
+.chat-compose {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-shrink: 0;
+  margin-top: 8px;
+}
+.chat-draft {
+  flex: 1;
+  min-height: 52px;
+  margin: 0;
+  font-size: 16px;
+  resize: none;
+}
+.chat-screen .speech-live,
+.chat-screen .listen-note,
+.chat-screen .mic-btn,
+.chat-screen .chat-compose {
+  flex-shrink: 0;
+}
+
 .card-scene {
   perspective: 900px;
   margin: 0 0 14px;

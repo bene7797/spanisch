@@ -23,6 +23,7 @@ function defaultStore() {
     correctTotal: 0,
     byDay: {},
     installHintDismissed: false,
+    geminiKey: "",
     name: ""
   };
 }
@@ -48,7 +49,8 @@ function migrateStore(store) {
   if (!Array.isArray(next.customVocab)) next.customVocab = [];
   if (!next.customSeq) next.customSeq = next.customVocab.length + 1;
   if (next.typeAnswers == null) next.typeAnswers = false;
-  if (next.lang !== "it") next.lang = "es";
+    if (next.geminiKey == null) next.geminiKey = "";
+    if (next.lang !== "it") next.lang = "es";
 
   const migrated = {};
   let changed = false;

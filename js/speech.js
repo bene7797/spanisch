@@ -171,7 +171,7 @@ registerProcessor("palabra-capture", PalabraCapture);
       language: language || "spanish",
       task: "transcribe",
       return_timestamps: false,
-      max_new_tokens: Math.max(4, Math.min(18, maxTokens || 12)),
+      max_new_tokens: Math.max(4, Math.min(80, maxTokens || 12)),
       num_beams: 1,
       do_sample: false,
       temperature: 0,
@@ -238,16 +238,17 @@ registerProcessor("palabra-capture", PalabraCapture);
     const words = String(expected || "").trim().split(/\s+/).filter(Boolean);
     const n = words.length;
     const chars = words.join("").length;
+    if (!n) return 64;
     if (n <= 1 && chars <= 4) return 4;
     return Math.min(18, Math.max(8, n * 3 + 4));
   }
 
-  function cleanTranscript(text, maxWords) {
+  function cleanTranscript(text, maxWords, keepSentences) {
     let t = String(text || "").replace(/\s+/g, " ").trim();
     if (!t) return "";
     if (/thanks for watching|amara\.org|please subscribe|subtitles by|subtítulos|copyright/i.test(t)) return "";
     t = t.replace(/\b(\S+)(\s+\1){2,}/gi, "$1");
-    t = t.split(/[.!?…]/)[0].trim();
+    if (!keepSentences) t = t.split(/[.!?…]/)[0].trim();
     const cap = Math.max(4, maxWords || 8);
     const words = t.split(/\s+/).filter(Boolean);
     if (words.length > cap) t = words.slice(0, cap).join(" ");
@@ -275,7 +276,7 @@ registerProcessor("palabra-capture", PalabraCapture);
   }
 
   function tokenBudgetFromMax(maxTokens) {
-    return Math.max(4, Math.min(18, maxTokens || 12));
+    return Math.max(4, Math.min(80, maxTokens || 12));
   }
 
   function rms(frame) {
@@ -437,7 +438,7 @@ registerProcessor("palabra-capture", PalabraCapture);
     const id = state.id;
     if (aborted || id !== runId) return;
     const vad = state.vad;
-    const used = Math.min(state.filled, MAX_SAMPLES);
+    const used = Math.min(state.filled, state.maxSamples);
     let start = vad.started ? vad.startSample : 0;
     let end = used;
     if (vad.started) end = Math.max(start + MIN_SPEECH, used - FRAME * Math.min(vad.silence, END_FRAMES));
@@ -469,7 +470,7 @@ registerProcessor("palabra-capture", PalabraCapture);
       const clip = state.buffer.subarray(start, start + speechLen);
       const msg = await transcribeAudio(clip, state.language, false, state.maxTokens);
       if (aborted || id !== runId) return;
-      const text = cleanTranscript(msg.text, 8);
+      const text = cleanTranscript(msg.text, state.maxWords, state.keepSentences);
       state.handlers.onResult?.(text, { ms: msg.ms, seconds: msg.seconds, partial: false });
     } catch (err) {
       if (aborted || id !== runId) return;
@@ -504,14 +505,19 @@ registerProcessor("palabra-capture", PalabraCapture);
     if (!Ctx) throw new Error("AudioContext fehlt in diesem Browser.");
     const ac = new Ctx({ sampleRate: TARGET_RATE });
     if (ac.state === "suspended") await ac.resume();
+    const maxSec = Math.min(16, Math.max(3, handlers.maxSeconds || MAX_SECONDS));
+    const maxSamples = TARGET_RATE * maxSec;
     const state = {
       id,
       handlers,
       language: handlers.language || "spanish",
       maxTokens: handlers.maxTokens || tokenBudget(handlers.expected),
+      maxWords: handlers.maxWords || 8,
+      keepSentences: Boolean(handlers.keepSentences),
+      maxSamples,
       stream,
       ac,
-      buffer: new Float32Array(MAX_SAMPLES),
+      buffer: new Float32Array(maxSamples),
       filled: 0,
       vad: createVad(),
       capturing: true,
@@ -526,7 +532,7 @@ registerProcessor("palabra-capture", PalabraCapture);
     recState = state;
     const onFrame = (frame) => {
       if (!state.capturing || state.id !== runId) return;
-      const room = MAX_SAMPLES - state.filled;
+      const room = state.maxSamples - state.filled;
       if (room <= 0) {
         finalize(state, "Zeit vorbei.");
         return;
@@ -561,7 +567,7 @@ registerProcessor("palabra-capture", PalabraCapture);
     }, NO_SPEECH_MS);
     state.timer = setTimeout(() => {
       if (state.capturing) finalize(state);
-    }, MAX_SECONDS * 1000);
+    }, maxSec * 1000);
   }
 
   function stop() {
