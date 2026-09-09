@@ -328,6 +328,29 @@ a { color: inherit; }
 .speak-bar .speak-icon { font-size: 22px; line-height: 1; }
 .speak-bar.playing { background: var(--terracotta-deep); }
 
+.practice-row {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0 12px;
+  flex-shrink: 0;
+}
+.practice-row .speak-bar,
+.practice-row .mic-btn {
+  flex: 1;
+  min-height: 48px;
+  margin: 0;
+  font-size: 15px;
+  padding: 10px 12px;
+}
+.speak-bar.compact .speak-icon { font-size: 18px; }
+
+.trans-input {
+  min-height: 120px;
+  resize: vertical;
+  font-size: 18px;
+  line-height: 1.4;
+}
+
 .card-scene {
   perspective: 900px;
   margin: 0 0 14px;
@@ -472,10 +495,13 @@ a { color: inherit; }
   flex-direction: column;
   min-height: 0;
 }
+.screen.study-speak .study-body {
+  overflow-y: auto;
+}
 .screen.study-speak .card-scene,
 .screen.study-speak .swipe-wrap,
 .screen.study-speak .flip-card {
-  min-height: 220px;
+  min-height: 180px;
 }
 
 .session-top {

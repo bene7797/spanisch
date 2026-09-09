@@ -20,7 +20,8 @@
     speechStatus: { phase: "idle", pct: 0, label: "" },
     modelProgress: { pct: 0, label: "" },
     catId: null,
-    addForm: { de: "", word: "", pos: "n" }
+    addForm: { de: "", word: "", pos: "n" },
+    translate: { input: "", output: "", note: "", busy: false, error: "", engine: "" }
   };
 
   let drag = null;
@@ -59,6 +60,7 @@
     PalabraSpeech.cancel();
     ui.speechPhase = "idle";
     ui.session = null;
+    ui.translate = { ...ui.translate, output: "", note: "", error: "", engine: "" };
     store.lang = next;
     store.unlockedLevel = langUnlocked(store);
     store.streak = store.streaks?.[next] || 0;
@@ -184,6 +186,29 @@
     return item.es;
   }
 
+  function spokenTarget(item) {
+    if (!item) return "";
+    if (item.type === "sentence" && item.text) {
+      return String(item.text).replace("___", item.answer || "").replace(/\s+/g, " ").trim();
+    }
+    if (item.answer && (item.type === "grammar" || item.type === "dialog")) return String(item.answer);
+    return displayEs(item);
+  }
+
+  function practiceRow(text, opts = {}) {
+    const say = esc(text || "");
+    const rec = ui.speechPhase === "recording";
+    const busy = ui.speechPhase === "busy" || ui.speechPhase === "mic" || ui.speechPhase === "loading";
+    const note = opts.note != null ? opts.note : ui.session?.listenNote || ui.listenNote || ui.translate?.note || "";
+    const listen = opts.listen !== false;
+    return `
+      <div class="practice-row">
+        ${listen ? `<button type="button" class="speak-bar compact" data-act="speak" data-say="${say}"><span class="speak-icon">🔊</span> Anhören</button>` : ""}
+        <button type="button" class="mic-btn compact ${rec ? "rec-on" : ""} ${busy ? "busy-on" : ""}" data-act="listen-say" data-say="${say}">${speechBtnLabel(true)}</button>
+      </div>
+      ${`<p class="listen-note">${esc(note)}</p>`}`;
+  }
+
   function dueCount(mode) {
     if (mode === "daily") return buildDailyQueue(poolFor("mixed"), store).length;
     return buildQueue(poolFor(mode), store, store.sessionSize).length;
@@ -221,6 +246,7 @@
       typed: "",
       typeResult: null,
       listenNote: "",
+      speakQuality: null,
       options: shuffleOptions(queue[0])
     };
     ui.view = "study";
@@ -278,6 +304,7 @@
     ui.session.typed = "";
     ui.session.typeResult = null;
     ui.session.listenNote = "";
+    ui.session.speakQuality = null;
     ui.speechPhase = "idle";
     PalabraSpeech.cancel();
     ui.session.options = shuffleOptions(currentItem());
@@ -480,6 +507,10 @@
         </div>
         ${installBanner()}
         ${ui.toast ? `<p class="muted small" style="margin-top:12px">${esc(ui.toast)}</p>` : ""}
+        <button class="tile tile-wide" data-go="translate">
+          <div class="emoji">⇄</div>
+          <div><h3>Übersetzen</h3><p>Deutsch eingeben, anhören, nachsprechen</p></div>
+        </button>
         <button class="tile tile-wide" data-act="start" data-mode="speak">
           <div class="emoji">🎙</div>
           <div><h3>Nachsprechen</h3><p>Deutsch sehen, ${langOf(store).name} sagen</p></div>
@@ -505,6 +536,10 @@
           <button class="tile" data-act="start" data-mode="grammar"><h3>Grammatik</h3><p>${dueCount("grammar")}</p></button>
           <button class="tile" data-act="start" data-mode="mixed"><h3>Gemischt</h3><p>${dueCount("mixed")}</p></button>
         </div>
+        <button class="tile tile-wide" data-go="translate">
+          <div class="emoji">⇄</div>
+          <div><h3>Übersetzen</h3><p>Frei tippen, anhören, nachsprechen</p></div>
+        </button>
         <button class="tile tile-wide" data-act="start" data-mode="speak">
           <div class="emoji">🎙</div>
           <div><h3>Nachsprechen</h3><p>Deutsch → ${langOf(store).name} sagen</p></div>
@@ -584,7 +619,13 @@
     const speakMode = isSpeakMode();
     const deFront = speakMode ? true : store.direction === "de-es";
     if (speakMode) {
+      const tried = ui.session.speakQuality != null;
+      const rec = ui.speechPhase !== "idle";
       return `
+      <button class="speak-bar" data-act="speak" data-say="${esc(es)}">
+        <span class="speak-icon">🔊</span>
+        Anhören
+      </button>
       <div class="card-scene">
         <div class="swipe-wrap">
           <div class="flip-card ${ui.session.flipped ? "flipped" : ""}">
@@ -602,27 +643,20 @@
           </div>
         </div>
       </div>
+      ${speechStatusCard()}
       ${
-        ui.session.answered
-          ? `<div class="feedback ${ui.session.chosen ? "ok" : "no"}">${esc(ui.session.listenNote || "")}</div>
-             <button class="btn btn-primary" data-act="next">Weiter</button>`
-          : `${speechStatusCard()}
-             <p class="listen-note">${esc(ui.session.listenNote || "")}</p>
-             <button class="mic-btn ${ui.speechPhase === "recording" ? "rec-on" : ""} ${ui.speechPhase === "busy" ? "busy-on" : ""}" data-act="listen-say">${speechBtnLabel()}</button>
-             ${
-               ui.speechPhase !== "idle"
-                 ? `<button class="btn btn-ghost" data-act="cancel-listen" style="margin-top:10px">Erkennung abbrechen</button>`
-                 : ""
-             }
-             <button class="btn btn-ghost danger" data-act="abort" style="margin-top:8px">Runde beenden</button>`
-      }`;
+        tried
+          ? `<div class="feedback ${ui.session.speakQuality ? "ok" : "no"}">${esc(ui.session.listenNote || "")}</div>`
+          : `<p class="listen-note">${esc(ui.session.listenNote || "")}</p>`
+      }
+      <button class="mic-btn ${ui.speechPhase === "recording" ? "rec-on" : ""} ${ui.speechPhase === "busy" ? "busy-on" : ""}" data-act="listen-say" data-say="${esc(es)}">${speechBtnLabel()}</button>
+      ${rec ? `<button class="btn btn-ghost" data-act="cancel-listen" style="margin-top:10px">Erkennung abbrechen</button>` : ""}
+      <button class="btn btn-primary" data-act="next" ${rec ? "disabled" : ""} style="margin-top:10px">${tried ? "Weiter" : "Überspringen"}</button>
+      <button class="btn btn-ghost danger" data-act="abort" style="margin-top:8px">Runde beenden</button>`;
     }
     if (typing) {
       return `
-      <button class="speak-bar" data-act="speak" data-say="${esc(es)}">
-        <span class="speak-icon">🔊</span>
-        Anhören
-      </button>
+      ${practiceRow(es)}
       <div class="prompt-card type-card">
         <span class="tag">${esc(POS_DE[item.pos] || item.pos)} · Nivel ${item.lv}</span>
         <div class="word" style="margin-top:10px">${esc(item.de)}</div>
@@ -640,10 +674,7 @@
     const front = deFront ? item.de : es;
     const back = deFront ? es : item.de;
     return `
-      <button class="speak-bar" data-act="speak" data-say="${esc(es)}">
-        <span class="speak-icon">🔊</span>
-        Anhören
-      </button>
+      ${practiceRow(es)}
       <div class="card-scene">
         <div class="swipe-wrap">
           <div class="stamp stamp-yes">Richtig</div>
@@ -729,6 +760,7 @@
     const showDe = Boolean(item.de) && (ui.session.showTrans || filled);
     const hint = item.hint ? `<p class="muted small" style="margin-top:10px">${esc(item.hint)}</p>` : "";
     return `
+      ${practiceRow(spokenTarget(item))}
       ${renderPromptFlip({ tag: choiceTag(item), body: prompt, de: item.de, flipped: showDe, extra: hint })}
       <div class="options">
         ${options
@@ -982,6 +1014,7 @@
           <span class="speak-icon">🔊</span>
           Anhören
         </button>
+        ${practiceRow(line.es, { listen: false, note: ui.listenNote || "" })}
         ${renderPromptFlip({ tag: esc(line.who), body: esc(line.es), de: line.de, flipped: ui.dialogShowDe })}
         <div class="dots">${d.lines.map((_, i) => `<i class="${i === ui.dialogLine ? "on" : ""}"></i>`).join("")}</div>
         <div class="grid-2">
@@ -1076,6 +1109,84 @@
       </div>`;
   }
 
+  async function translateGerman(text) {
+    const q = String(text || "").trim();
+    if (!q) throw new Error("Bitte erst Deutsch eingeben.");
+    const tl = store.lang === "it" ? "it" : "es";
+    const gtx = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=de&tl=" + tl + "&dt=t&q=" + encodeURIComponent(q);
+    try {
+      const res = await fetch(gtx);
+      if (res.ok) {
+        const data = await res.json();
+        const out = Array.isArray(data?.[0]) ? data[0].map((row) => row?.[0] || "").join("") : "";
+        if (out.trim()) return { text: out.trim(), engine: "Google" };
+      }
+    } catch {}
+    const mem = "https://api.mymemory.translated.net/get?q=" + encodeURIComponent(q) + "&langpair=de|" + tl.toUpperCase();
+    const res2 = await fetch(mem);
+    if (!res2.ok) throw new Error("Übersetzung gerade nicht erreichbar. Netz prüfen.");
+    const data2 = await res2.json();
+    const out2 = String(data2?.responseData?.translatedText || "").trim();
+    if (!out2 || /INVALID SOURCE LANGUAGE/i.test(out2)) throw new Error("Keine Übersetzung bekommen.");
+    return { text: out2, engine: "MyMemory" };
+  }
+
+  async function runTranslate() {
+    const box = app.querySelector("[data-trans='input']");
+    const input = box ? box.value : ui.translate?.input || "";
+    ui.translate = { ...(ui.translate || {}), input, busy: true, error: "", note: "" };
+    render();
+    try {
+      const out = await translateGerman(input);
+      if (ui.view !== "translate") return;
+      ui.translate = { ...ui.translate, output: out.text, engine: out.engine, busy: false, error: "" };
+    } catch (err) {
+      if (ui.view !== "translate") return;
+      ui.translate = {
+        ...ui.translate,
+        busy: false,
+        error: err?.message || "Übersetzung fehlgeschlagen."
+      };
+    }
+    render();
+  }
+
+  function renderTranslate() {
+    const t = ui.translate || { input: "", output: "", note: "", busy: false, error: "", engine: "" };
+    const L = langOf(store);
+    const rec = ui.speechPhase !== "idle";
+    return `
+      <div class="screen no-nav">
+        <div class="topbar">
+          <button class="icon-btn" data-go="home">←</button>
+          <h1>Übersetzen</h1>
+        </div>
+        <p class="muted" style="margin-bottom:14px">Deutsch eintippen, auf ${esc(L.name)} hören oder nachsprechen. Maschinelle Übersetzung, zum Üben.</p>
+        <label class="field">
+          <span>Deutsch</span>
+          <textarea class="type-input trans-input" data-trans="input" rows="4" placeholder="z. B. Wo ist der Bahnhof?" ${t.busy ? "disabled" : ""}>${esc(t.input)}</textarea>
+        </label>
+        <button class="btn btn-primary" data-act="do-translate" ${t.busy || !String(t.input || "").trim() ? "disabled" : ""} style="margin-top:10px">${t.busy ? "Übersetzt…" : "Auf " + L.name + " übersetzen"}</button>
+        ${t.error ? `<p class="listen-note" style="margin-top:12px">${esc(t.error)}</p>` : ""}
+        ${
+          t.output
+            ? `<div class="prompt-card" style="margin-top:16px">
+                <span class="tag">${L.code}${t.engine ? " · " + esc(t.engine) : ""}</span>
+                <div class="word" style="margin-top:10px">${esc(t.output)}</div>
+              </div>
+              <button class="speak-bar" data-act="speak" data-say="${esc(t.output)}">
+                <span class="speak-icon">🔊</span>
+                Anhören
+              </button>
+              ${speechStatusCard()}
+              <p class="listen-note">${esc(t.note || "")}</p>
+              <button class="mic-btn ${ui.speechPhase === "recording" ? "rec-on" : ""} ${ui.speechPhase === "busy" ? "busy-on" : ""}" data-act="listen-say" data-say="${esc(t.output)}">${speechBtnLabel()}</button>
+              ${rec ? `<button class="btn btn-ghost" data-act="cancel-listen" style="margin-top:10px">Erkennung abbrechen</button>` : ""}`
+            : ""
+        }
+      </div>`;
+  }
+
   function render() {
     if (ui.view !== "home" && ui.view !== "settings" && ui.view !== "add-word" && ui.view !== "vocab-cats") ui.toast = "";
     document.body.dataset.lang = store.lang || "es";
@@ -1092,7 +1203,8 @@
       "dialog-play": renderDialogPlay,
       "speech-load": renderSpeechLoad,
       "vocab-cats": renderVocabCats,
-      "add-word": renderAddWord
+      "add-word": renderAddWord,
+      translate: renderTranslate
     };
     app.innerHTML = (map[ui.view] || renderHome)();
     const screen = app.querySelector(".screen");
@@ -1188,12 +1300,13 @@
     </div>`;
   }
 
-  function speechBtnLabel() {
-    if (ui.speechPhase === "loading") return "Lädt Modell…";
-    if (ui.speechPhase === "mic") return "Frage Mikrofon an…";
-    if (ui.speechPhase === "recording") return "Stopp · ich höre zu";
-    if (ui.speechPhase === "busy") return "Bitte warten…";
-    return "🎙 " + langOf(store).name + " sagen";
+  function speechBtnLabel(compact) {
+    if (ui.speechPhase === "loading") return compact ? "Lädt…" : "Lädt Modell…";
+    if (ui.speechPhase === "mic") return compact ? "Mikro…" : "Frage Mikrofon an…";
+    if (ui.speechPhase === "recording") return compact ? "Stopp" : "Stopp · ich höre zu";
+    if (ui.speechPhase === "busy") return compact ? "Warten…" : "Bitte warten…";
+    if (isSpeakMode() && ui.session?.speakQuality != null) return compact ? "🎙 Nochmal" : "🎙 Nochmal versuchen";
+    return compact ? "🎙 Sagen" : "🎙 " + langOf(store).name + " sagen";
   }
 
   function patchSpeechUi(phase, note) {
@@ -1204,10 +1317,12 @@
     const liveP = app.querySelector(".speech-live p");
     const liveTitle = app.querySelector(".speech-live-top b");
     const listenNote = app.querySelector(".listen-note");
-    if (!mic) return false;
-    mic.textContent = speechBtnLabel();
-    mic.classList.toggle("rec-on", ui.speechPhase === "recording");
-    mic.classList.toggle("busy-on", ui.speechPhase === "busy");
+    if (!mic && !listenNote && !live) return false;
+    if (mic) {
+      mic.textContent = speechBtnLabel(mic.classList.contains("compact"));
+      mic.classList.toggle("rec-on", ui.speechPhase === "recording");
+      mic.classList.toggle("busy-on", ui.speechPhase === "busy" || ui.speechPhase === "mic" || ui.speechPhase === "loading");
+    }
     if (live) live.dataset.phase = ui.speechPhase || "idle";
     const titles = {
       idle: "Bereit",
@@ -1232,7 +1347,10 @@
 
   function setListenNote(msg) {
     if (ui.view === "dialog-play") ui.listenNote = msg;
-    else if (ui.session) ui.session.listenNote = msg;
+    else if (ui.view === "translate") {
+      ui.translate = ui.translate || {};
+      ui.translate.note = msg;
+    } else if (ui.session) ui.session.listenNote = msg;
   }
 
   function patchSpeechLoad(p) {
@@ -1288,7 +1406,10 @@
     if (now < listenGuardUntil) return;
     if (ui.speechPhase === "loading" || ui.speechPhase === "mic" || ui.speechPhase === "busy") return;
     const item = currentItem();
-    const target = expectedSay || (item ? displayEs(item) : "");
+    const target =
+      expectedSay ||
+      (ui.view === "translate" ? ui.translate?.output : "") ||
+      (item ? spokenTarget(item) : "");
     const probe = item && ui.view === "study" ? item : { es: target, pos: "phr" };
     listenGuardUntil = now + 1000;
     try {
@@ -1333,8 +1454,7 @@
           setListenNote(scored.note);
           if (isSpeakMode() && ui.session && !ui.session.answered) {
             ui.session.listenNote = scored.note;
-            applyAnswer(scored.ok ? 1 : 0);
-            return;
+            ui.session.speakQuality = scored.ok ? 1 : 0;
           }
           render();
         },
@@ -1423,7 +1543,7 @@
     if (e.button) return;
     if (ui.view !== "study" || swipeLock) return;
     if (ui.session?.showForms) return;
-    if (e.target.closest("[data-act='speak'], [data-act='abort'], [data-act='cancel-listen'], [data-act='toggle-forms'], [data-act='toggle-trans'], [data-act='listen-say'], [data-act='type-submit'], .icon-btn, .type-input, .card-tools, .forms-modal, .mic-btn, .prompt-flip")) return;
+    if (e.target.closest("[data-act='speak'], [data-act='abort'], [data-act='cancel-listen'], [data-act='toggle-forms'], [data-act='toggle-trans'], [data-act='listen-say'], [data-act='type-submit'], [data-act='next'], .icon-btn, .type-input, .card-tools, .practice-row, .forms-modal, .mic-btn, .prompt-flip, .speak-bar")) return;
     const wrap = e.target.closest(".swipe-wrap");
     if (!wrap || !isCardItem(currentItem()) || shouldType(currentItem())) return;
     e.preventDefault();
@@ -1577,7 +1697,12 @@
       ui.session.picked = t.dataset.val;
       applyAnswer(t.dataset.val === item.answer ? 1 : 0);
     } else if (act === "next") {
+      if (isSpeakMode() && ui.session && !ui.session.answered && ui.session.speakQuality != null) {
+        applyAnswer(ui.session.speakQuality, { silent: true });
+      }
       nextCard();
+    } else if (act === "do-translate") {
+      runTranslate();
     } else if (act === "abort") {
       drag = null;
       swipeLock = false;
@@ -1638,6 +1763,12 @@
 
   app.addEventListener("input", (e) => {
     if (e.target.classList.contains("type-input") && ui.session) ui.session.typed = e.target.value;
+    if (e.target.dataset.trans === "input") {
+      ui.translate = ui.translate || { input: "", output: "", note: "", busy: false, error: "", engine: "" };
+      ui.translate.input = e.target.value;
+      const btn = app.querySelector("[data-act='do-translate']");
+      if (btn) btn.disabled = ui.translate.busy || !String(e.target.value).trim();
+    }
     if (e.target.dataset.add && e.target.dataset.add !== "pos") {
       ui.addForm = ui.addForm || { de: "", word: "", pos: "n" };
       ui.addForm[e.target.dataset.add] = e.target.value;
