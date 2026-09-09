@@ -22,30 +22,6 @@ function configureEnv() {
   }
 }
 
-async function hasWebGPU() {
-  if (!self.navigator?.gpu) return false;
-  try {
-    const adapter = await self.navigator.gpu.requestAdapter();
-    return Boolean(adapter);
-  } catch {
-    return false;
-  }
-}
-
-async function createPipe(onProgress, wantGpu) {
-  const opts = {
-    progress_callback: (info) => onProgress?.(info)
-  };
-  if (wantGpu) {
-    opts.device = "webgpu";
-    opts.dtype = { encoder_model: "fp16", decoder_model_merged: "q8" };
-    return pipeline("automatic-speech-recognition", MODEL, opts);
-  }
-  opts.device = "wasm";
-  opts.dtype = "q8";
-  return pipeline("automatic-speech-recognition", MODEL, opts);
-}
-
 function report(info) {
   self.postMessage({ type: "progress", info });
 }
@@ -58,42 +34,21 @@ async function load(requestId) {
   const my = ++loadGen;
   configureEnv();
   report({ status: "initiate", file: "transformers" });
-  const gpu = await hasWebGPU();
-  const attempts = gpu
-    ? [
-        { gpu: true, device: "webgpu", dtype: "fp16+q8" },
-        { gpu: true, device: "webgpu", dtype: "q8" },
-        { gpu: false, device: "wasm", dtype: "q8" }
-      ]
-    : [{ gpu: false, device: "wasm", dtype: "q8" }];
-
-  let lastErr = null;
-  for (const attempt of attempts) {
+  try {
+    pipe = await pipeline("automatic-speech-recognition", MODEL, {
+      device: "wasm",
+      dtype: "q8",
+      progress_callback: report
+    });
+    device = "wasm";
+    dtype = "q8";
+  } catch (err) {
+    pipe = null;
     if (my !== loadGen) return;
-    try {
-      if (attempt.gpu && attempt.dtype === "q8") {
-        pipe = await pipeline("automatic-speech-recognition", MODEL, {
-          device: "webgpu",
-          dtype: "q8",
-          progress_callback: report
-        });
-      } else {
-        pipe = await createPipe(report, attempt.gpu);
-      }
-      device = attempt.device;
-      dtype = attempt.dtype;
-      lastErr = null;
-      break;
-    } catch (err) {
-      pipe = null;
-      lastErr = err;
-    }
-  }
-  if (my !== loadGen) return;
-  if (!pipe) {
-    self.postMessage({ type: "error", requestId, message: lastErr?.message || "Modell konnte nicht geladen werden." });
+    self.postMessage({ type: "error", requestId, message: err?.message || "Modell konnte nicht geladen werden." });
     return;
   }
+  if (my !== loadGen) return;
   try {
     const warm = new Float32Array(SRC_RATE / 2);
     await pipe(warm, decodeOpts("spanish"));

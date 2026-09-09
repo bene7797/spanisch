@@ -312,6 +312,63 @@ function foldText(s) {
     .replace(/\s+/g, " ");
 }
 
+function foldSound(s) {
+  return foldText(s)
+    .replace(/h/g, "")
+    .replace(/que|qui/g, (m) => "k" + m.slice(2))
+    .replace(/güe|güi/g, (m) => "gu" + m.slice(2))
+    .replace(/ce|ci/g, (m) => "s" + m.slice(1))
+    .replace(/ge|gi/g, (m) => "x" + m.slice(1))
+    .replace(/ll/g, "y")
+    .replace(/ñ/g, "ny")
+    .replace(/gn/g, "ny")
+    .replace(/v/g, "b")
+    .replace(/z/g, "s")
+    .replace(/j/g, "x")
+    .replace(/qu/g, "k")
+    .replace(/c(?=[aou])/g, "k")
+    .replace(/w/g, "u")
+    .replace(/y/g, "i")
+    .replace(/rr/g, "r")
+    .replace(/d$/g, "t")
+    .replace(/(.)\1+/g, "$1");
+}
+
+function editDist(a, b) {
+  const m = a.length;
+  const n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  const row = new Array(n + 1);
+  for (let j = 0; j <= n; j++) row[j] = j;
+  for (let i = 1; i <= m; i++) {
+    let prev = row[0];
+    row[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cur = row[j];
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + cost);
+      prev = cur;
+    }
+  }
+  return row[n];
+}
+
+function soundsClose(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const pa = foldSound(a);
+  const pb = foldSound(b);
+  if (pa === pb) return true;
+  if (pa.includes(pb) || pb.includes(pa)) return true;
+  const d = Math.min(editDist(a, b), editDist(pa, pb));
+  const len = Math.max(pa.length, pb.length, a.length, b.length);
+  if (len <= 2) return d === 0;
+  if (len <= 4) return d <= 1;
+  if (len <= 8) return d <= 2;
+  return d <= 3 && d / len <= 0.34;
+}
+
 function expectedSpanish(item) {
   if (item.pos === "n") return withArticle(item);
   return item.es;
@@ -355,5 +412,12 @@ function scoreSpoken(heard, item) {
   const wordsB = b.split(" ").filter(Boolean);
   const hit = wordsB.filter((w) => w.length > 2 && wordsA.includes(w)).length;
   if (wordsB.length && hit / wordsB.length >= 0.7) return { ok: true, note: "Fast: " + expected };
+  if (soundsClose(a, b) || (lemma && soundsClose(a, lemma))) {
+    return { ok: true, note: "Klingt nah genug: " + expected };
+  }
+  if (wordsA.length && wordsB.length && wordsA.length <= wordsB.length + 2) {
+    const closeWords = wordsB.filter((w, i) => soundsClose(wordsA[i] || "", w) || wordsA.some((x) => soundsClose(x, w)));
+    if (closeWords.length / wordsB.length >= 0.7) return { ok: true, note: "Klingt nah genug: " + expected };
+  }
   return { ok: false, note: "Gehört: „" + clipped + "“ · Ziel: " + expected };
 }
