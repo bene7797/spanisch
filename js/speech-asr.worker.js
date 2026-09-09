@@ -61,7 +61,7 @@ function decodeOpts(language, maxTokens) {
     language: language || "spanish",
     task: "transcribe",
     return_timestamps: false,
-    max_new_tokens: Math.max(6, Math.min(18, maxTokens || 12)),
+    max_new_tokens: Math.max(4, Math.min(18, maxTokens || 12)),
     num_beams: 1,
     do_sample: false,
     temperature: 0,

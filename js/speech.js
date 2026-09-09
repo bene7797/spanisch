@@ -171,7 +171,7 @@ registerProcessor("palabra-capture", PalabraCapture);
       language: language || "spanish",
       task: "transcribe",
       return_timestamps: false,
-      max_new_tokens: Math.max(6, Math.min(18, maxTokens || 12)),
+      max_new_tokens: Math.max(4, Math.min(18, maxTokens || 12)),
       num_beams: 1,
       do_sample: false,
       temperature: 0,
@@ -235,7 +235,10 @@ registerProcessor("palabra-capture", PalabraCapture);
   }
 
   function tokenBudget(expected) {
-    const n = String(expected || "").trim().split(/\s+/).filter(Boolean).length;
+    const words = String(expected || "").trim().split(/\s+/).filter(Boolean);
+    const n = words.length;
+    const chars = words.join("").length;
+    if (n <= 1 && chars <= 4) return 4;
     return Math.min(18, Math.max(8, n * 3 + 4));
   }
 
@@ -272,7 +275,7 @@ registerProcessor("palabra-capture", PalabraCapture);
   }
 
   function tokenBudgetFromMax(maxTokens) {
-    return Math.max(6, Math.min(18, maxTokens || 12));
+    return Math.max(4, Math.min(18, maxTokens || 12));
   }
 
   function rms(frame) {

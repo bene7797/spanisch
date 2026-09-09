@@ -354,19 +354,57 @@ function editDist(a, b) {
   return row[n];
 }
 
+const SOUND_ALIASES = [
+  ["ir", "y", "i", "hir", "yr"],
+  ["hay", "ay", "ahi", "ai"],
+  ["ha", "a", "ah"],
+  ["el", "l"],
+  ["si", "ci"],
+  ["se", "ce"],
+  ["voy", "boy"],
+  ["vaya", "baya", "valla"],
+  ["o", "oh"],
+  ["e", "eh", "he"]
+];
+
+function sameAlias(a, b) {
+  const fa = foldText(a);
+  const fb = foldText(b);
+  if (!fa || !fb) return false;
+  return SOUND_ALIASES.some((group) => {
+    const g = group.map(foldText);
+    return g.includes(fa) && g.includes(fb);
+  });
+}
+
+function sameShortStem(a, b) {
+  const pa = foldSound(a);
+  const pb = foldSound(b);
+  if (!pa || !pb) return false;
+  const fa = foldText(a);
+  const fb = foldText(b);
+  if (Math.max(fa.length, fb.length) > 3) return false;
+  const stem = (s) => s.replace(/r$/g, "");
+  return stem(pa) === stem(pb);
+}
+
 function soundsClose(a, b) {
   if (!a || !b) return false;
   if (a === b) return true;
+  if (sameAlias(a, b) || sameShortStem(a, b)) return true;
   const pa = foldSound(a);
   const pb = foldSound(b);
   if (pa === pb) return true;
-  if (pa.includes(pb) || pb.includes(pa)) return true;
-  const d = Math.min(editDist(a, b), editDist(pa, pb));
-  const len = Math.max(pa.length, pb.length, a.length, b.length);
-  if (len <= 2) return d === 0;
-  if (len <= 4) return d <= 1;
-  if (len <= 8) return d <= 2;
-  return d <= 3 && d / len <= 0.34;
+  const fa = foldText(a);
+  const fb = foldText(b);
+  const minRaw = Math.min(fa.length, fb.length);
+  const maxRaw = Math.max(fa.length, fb.length);
+  if (minRaw >= 3 && (pa.includes(pb) || pb.includes(pa))) return true;
+  const d = Math.min(editDist(fa, fb), editDist(pa, pb));
+  if (maxRaw <= 2) return false;
+  if (maxRaw <= 4) return d <= 1;
+  if (maxRaw <= 8) return d <= 2;
+  return d <= 3 && d / Math.max(pa.length, pb.length) <= 0.34;
 }
 
 function expectedSpanish(item) {
@@ -403,9 +441,14 @@ function scoreSpoken(heard, item) {
   const b = foldText(expected);
   if (!a) return { ok: false, note: "Nichts erkannt." };
   if (a === b) return { ok: true, note: "Klingt gut: " + expected };
-  if (a.includes(b) || b.includes(a)) return { ok: true, note: "Passt: " + expected };
+  if (sameAlias(a, b) || sameShortStem(a, b)) {
+    return { ok: true, note: "Klingt nah genug: " + expected };
+  }
+  if (a.length >= 3 && b.length >= 3 && (a.includes(b) || b.includes(a))) {
+    return { ok: true, note: "Passt: " + expected };
+  }
   const lemma = foldText(stripArticle(expected));
-  if (lemma && (a === lemma || a.includes(lemma) || lemma.includes(a))) {
+  if (lemma && (a === lemma || (a.length >= 3 && lemma.length >= 3 && (a.includes(lemma) || lemma.includes(a))))) {
     return { ok: true, note: "Passt" + (item.pos === "n" ? " (Artikel merken: " + expected + ")" : ": " + expected) };
   }
   const wordsA = a.split(" ").filter(Boolean);

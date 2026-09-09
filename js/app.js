@@ -1295,7 +1295,6 @@
       await PalabraSpeech.toggle({
         language: langOf(store).whisper,
         expected: target,
-        maxTokens: Math.min(18, Math.max(8, String(target || "").trim().split(/\s+/).filter(Boolean).length * 3 + 4)),
         onProgress: (p) => {
           ui.speechStatus = p;
           if (ui.view === "speech-load") {
