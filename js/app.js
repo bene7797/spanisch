@@ -485,7 +485,7 @@
           <h2>${quotaDone ? "Pensum erledigt" : daily ? daily + " Karten im Pensum" : "Nichts Fälliges"}</h2>
           <div class="progress"><span style="width:${quotaDone ? 100 : pct}%"></span></div>
           <div class="hero-meta"><span>${learned} / ${cap.length} sitzen wirklich</span><span>${pct}%</span></div>
-          <button class="btn" data-act="start" data-mode="${quotaDone ? "mixed" : "daily"}" style="margin-top:16px;background:#fffaf3;color:#9a3412" ${!daily && !quotaDone ? "disabled" : ""}>${quotaDone ? "Extra-Runde" : "Tagespensum"}</button>
+          <button class="btn" data-act="start" data-mode="${quotaDone ? "mixed" : "daily"}" style="margin-top:10px;background:#fffaf3;color:#9a3412" ${!daily && !quotaDone ? "disabled" : ""}>${quotaDone ? "Extra-Runde" : "Tagespensum"}</button>
         </div>
         <div class="stats-row">
           <div class="stat"><b>${store.streak}</b><span>Tage Pensum</span></div>
@@ -532,8 +532,8 @@
     return `
       <div class="screen">
         <div class="topbar"><h1>Lernen</h1></div>
-        <p class="muted" style="margin-bottom:16px">Eine Sektion, Brocken, Dialoge oder alles gemischt.</p>
-        <button class="tile" style="width:100%;margin-bottom:12px" data-act="start" data-mode="daily">
+        <p class="muted" style="margin-bottom:10px">Eine Sektion, Brocken, Dialoge oder alles gemischt.</p>
+        <button class="tile" style="width:100%;margin-bottom:8px" data-act="start" data-mode="daily">
           <div class="emoji">✦</div>
           <div><h3>Tagespensum</h3><p>${dueCount("daily")} Karten · Streak nur bei Pensum</p></div>
         </button>
@@ -1456,12 +1456,29 @@
     app.innerHTML = (map[ui.view] || renderHome)();
     const screen = app.querySelector(".screen");
     const card = ui.view === "study" && ui.session ? ui.session.index + ":" + (currentItem()?.id || "") : ui.view === "dialog-play" ? ui.dialogId + ":" + ui.dialogLine : "";
-    if (screen && lastPaint.view !== ui.view) screen.classList.add("enter");
-    else if (screen && lastPaint.card && lastPaint.card !== card) {
+    const viewChanged = lastPaint.view !== ui.view;
+    const cardChanged = Boolean(card) && lastPaint.card !== card;
+    if (screen && viewChanged) screen.classList.add("enter");
+    else if (screen && lastPaint.card && cardChanged) {
       (screen.querySelector(".study-body") || screen.querySelector(".prompt-scene"))?.classList.add("swap");
     }
     lastPaint = { view: ui.view, card };
+    if (viewChanged || cardChanged || !card) pinToTop(screen);
     afterRender();
+  }
+
+  function pinToTop(screen) {
+    const pin = () => {
+      window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+      app.scrollTop = 0;
+      if (screen) screen.scrollTop = 0;
+      const body = screen?.querySelector(".study-body");
+      if (body && ui.view !== "chat") body.scrollTop = 0;
+    };
+    pin();
+    requestAnimationFrame(pin);
   }
 
   function submitTyped() {
