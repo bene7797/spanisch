@@ -14,6 +14,7 @@
     dialogShowDe: false,
     toast: "",
     formsLockUntil: 0,
+    mnemonicLockUntil: 0,
     listenNote: "",
     speechPhase: "idle",
     speakLoadGen: 0,
@@ -245,6 +246,7 @@
       chosen: null,
       showTrans: false,
       showForms: false,
+      showMnemonic: false,
       typed: "",
       typeResult: null,
       listenNote: "",
@@ -303,6 +305,7 @@
     ui.session.chosen = null;
     ui.session.showTrans = false;
     ui.session.showForms = false;
+    ui.session.showMnemonic = false;
     ui.session.typed = "";
     ui.session.typeResult = null;
     ui.session.listenNote = "";
@@ -712,14 +715,35 @@
       </div>`;
   }
 
+  function renderFormsTable(rows) {
+    return `<table class="table">${(rows || []).map((r) => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td></tr>`).join("")}</table>`;
+  }
+
   function renderFormsModal(forms) {
+    const sections = forms.sections && forms.sections.length
+      ? forms.sections
+      : [{ title: null, rows: forms.rows }];
     return `<div class="forms-modal" data-act="close-forms">
       <div class="forms-sheet" data-act="forms-noop">
         <div class="forms-sheet-head">
           <div class="tag">${esc(forms.title)}</div>
           <button class="icon-btn" data-act="close-forms" aria-label="Schließen">×</button>
         </div>
-        <table class="table">${forms.rows.map((r) => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td></tr>`).join("")}</table>
+        ${sections.map((sec) => `${sec.title ? `<h3 class="forms-sec">${esc(sec.title)}</h3>` : ""}${renderFormsTable(sec.rows)}`).join("")}
+      </div>
+    </div>`;
+  }
+
+  function renderMnemonicModal(m) {
+    const paras = String(m.body || "").split(/\n\n+/).filter(Boolean);
+    return `<div class="forms-modal" data-act="close-mnemonic">
+      <div class="forms-sheet" data-act="forms-noop">
+        <div class="forms-sheet-head">
+          <div class="tag">${esc(m.title)}</div>
+          <button class="icon-btn" data-act="close-mnemonic" aria-label="Schließen">×</button>
+        </div>
+        ${m.hook ? `<p class="mnemonic-hook">${esc(m.hook)}</p>` : ""}
+        <div class="mnemonic-body">${paras.map((p) => `<p>${esc(p)}</p>`).join("")}</div>
       </div>
     </div>`;
   }
@@ -873,12 +897,14 @@
     const pct = Math.round((s.index / s.queue.length) * 100);
     const labels = { vocab: "Vokabeln", grammar: "Grammatik", sentence: "Sätze", mixed: "Gemischt", topic: "Thema", chunk: "Brocken", daily: "Pensum", dialog: "Dialog", speak: "Nachsprechen" };
     const forms = isCardItem(item) && !isSpeakMode() ? getWordForms(item) : null;
+    const mnemonic = isCardItem(item) && !isSpeakMode() ? mnemonicFor(item) : null;
     return `
       <div class="screen no-nav ${isCardItem(item) ? "study-vocab" : ""} ${isSpeakMode() ? "study-speak" : ""}">
         <div class="session-top">
           <button class="icon-btn" data-act="abort">×</button>
           <span class="chip">${labels[s.mode] || "Runde"}</span>
           ${forms ? `<button class="tool-btn forms-open" data-act="toggle-forms">Alle Formen</button>` : ""}
+          ${mnemonic ? `<button class="tool-btn mnemonic-open" data-act="toggle-mnemonic">Eselsbrücke anzeigen</button>` : ""}
           <span class="session-count">${s.index + 1} / ${s.queue.length}</span>
         </div>
         <div class="thin-progress"><span style="width:${pct}%"></span></div>
@@ -886,7 +912,8 @@
         ${isCardItem(item) ? renderVocabCard(item) : renderChoice(item)}
         </div>
       </div>
-      ${s.showForms && forms ? renderFormsModal(forms) : ""}`;
+      ${s.showForms && forms ? renderFormsModal(forms) : ""}
+      ${s.showMnemonic && mnemonic ? renderMnemonicModal(mnemonic) : ""}`;
   }
 
   function renderResult() {
@@ -1786,8 +1813,8 @@
   app.addEventListener("pointerdown", (e) => {
     if (e.button) return;
     if (ui.view !== "study" || swipeLock) return;
-    if (ui.session?.showForms) return;
-    if (e.target.closest("[data-act='speak'], [data-act='abort'], [data-act='cancel-listen'], [data-act='toggle-forms'], [data-act='toggle-trans'], [data-act='listen-say'], [data-act='type-submit'], [data-act='next'], .icon-btn, .type-input, .card-tools, .practice-row, .forms-modal, .mic-btn, .prompt-flip, .speak-bar")) return;
+    if (ui.session?.showForms || ui.session?.showMnemonic) return;
+    if (e.target.closest("[data-act='speak'], [data-act='abort'], [data-act='cancel-listen'], [data-act='toggle-forms'], [data-act='toggle-mnemonic'], [data-act='toggle-trans'], [data-act='listen-say'], [data-act='type-submit'], [data-act='next'], .icon-btn, .type-input, .card-tools, .practice-row, .forms-modal, .mic-btn, .prompt-flip, .speak-bar")) return;
     const wrap = e.target.closest(".swipe-wrap");
     if (!wrap || !isCardItem(currentItem()) || shouldType(currentItem())) return;
     e.preventDefault();
@@ -1881,12 +1908,30 @@
       e.stopPropagation();
       if (!ui.session) return;
       ui.session.showForms = !ui.session.showForms;
-      if (ui.session.showForms) ui.formsLockUntil = Date.now() + 500;
+      if (ui.session.showForms) {
+        ui.session.showMnemonic = false;
+        ui.formsLockUntil = Date.now() + 500;
+      }
       render();
     } else if (act === "close-forms") {
       if (!ui.session) return;
       if (Date.now() < ui.formsLockUntil) return;
       ui.session.showForms = false;
+      render();
+    } else if (act === "toggle-mnemonic") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!ui.session) return;
+      ui.session.showMnemonic = !ui.session.showMnemonic;
+      if (ui.session.showMnemonic) {
+        ui.session.showForms = false;
+        ui.mnemonicLockUntil = Date.now() + 500;
+      }
+      render();
+    } else if (act === "close-mnemonic") {
+      if (!ui.session) return;
+      if (Date.now() < ui.mnemonicLockUntil) return;
+      ui.session.showMnemonic = false;
       render();
     } else if (act === "forms-noop") {
       return;
@@ -2046,7 +2091,13 @@
   });
 
   document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape" || !ui.session?.showForms) return;
+    if (e.key !== "Escape" || !ui.session) return;
+    if (ui.session.showMnemonic) {
+      ui.session.showMnemonic = false;
+      render();
+      return;
+    }
+    if (!ui.session.showForms) return;
     ui.session.showForms = false;
     render();
   });

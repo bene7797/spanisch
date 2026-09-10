@@ -126,6 +126,102 @@ const IRREG_PRES = {
   huir: { yo: "huyo", tu: "huyes", el: "huye", nos: "huimos", vos: "huís", ellos: "huyen" }
 };
 
+const IRREG_IMP = {
+  ser: { tu: "sé", ud: "sea", vos: "sed", uds: "sean" },
+  ir: { tu: "ve", ud: "vaya", vos: "id", uds: "vayan" },
+  estar: { tu: "está", ud: "esté", vos: "estad", uds: "estén" },
+  dar: { tu: "da", ud: "dé", vos: "dad", uds: "den" },
+  tener: { tu: "ten", ud: "tenga", vos: "tened", uds: "tengan" },
+  venir: { tu: "ven", ud: "venga", vos: "venid", uds: "vengan" },
+  poner: { tu: "pon", ud: "ponga", vos: "poned", uds: "pongan" },
+  salir: { tu: "sal", ud: "salga", vos: "salid", uds: "salgan" },
+  hacer: { tu: "haz", ud: "haga", vos: "haced", uds: "hagan" },
+  decir: { tu: "di", ud: "diga", vos: "decid", uds: "digan" },
+  oír: { tu: "oye", ud: "oiga", vos: "oíd", uds: "oigan" },
+  ver: { tu: "ve", ud: "vea", vos: "ved", uds: "vean" },
+  saber: { tu: "sabe", ud: "sepa", vos: "sabed", uds: "sepan" },
+  conocer: { tu: "conoce", ud: "conozca", vos: "conoced", uds: "conozcan" },
+  traer: { tu: "trae", ud: "traiga", vos: "traed", uds: "traigan" },
+  caer: { tu: "cae", ud: "caiga", vos: "caed", uds: "caigan" },
+  seguir: { tu: "sigue", ud: "siga", vos: "seguid", uds: "sigan" },
+  elegir: { tu: "elige", ud: "elija", vos: "elegid", uds: "elijan" },
+  traducir: { tu: "traduce", ud: "traduzca", vos: "traducid", uds: "traduzcan" },
+  jugar: { tu: "juega", ud: "juegue", vos: "jugad", uds: "jueguen" },
+  llegar: { tu: "llega", ud: "llegue", vos: "llegad", uds: "lleguen" },
+  empezar: { tu: "empieza", ud: "empiece", vos: "empezad", uds: "empiecen" },
+  buscar: { tu: "busca", ud: "busque", vos: "buscad", uds: "busquen" },
+  pagar: { tu: "paga", ud: "pague", vos: "pagad", uds: "paguen" },
+  llamar: { tu: "llama", ud: "llame", vos: "llamad", uds: "llamen" },
+  vestir: { tu: "viste", ud: "vista", vos: "vestid", uds: "vistan" },
+  despertar: { tu: "despierta", ud: "despierte", vos: "despertad", uds: "despierten" },
+  acostar: { tu: "acuesta", ud: "acueste", vos: "acostad", uds: "acuesten" },
+  levantar: { tu: "levanta", ud: "levante", vos: "levantad", uds: "levanten" },
+  duchar: { tu: "ducha", ud: "duche", vos: "duchad", uds: "duchen" },
+  quedar: { tu: "queda", ud: "quede", vos: "quedad", uds: "queden" }
+};
+
+const SKIP_IMP = new Set(["hay", "haber", "gustar", "encantar", "doler", "llover", "parecer"]);
+
+function spellingArCommand(stem, ending) {
+  if (ending.startsWith("e")) {
+    if (stem.endsWith("g")) return stem.slice(0, -1) + "gu" + ending;
+    if (stem.endsWith("c")) return stem.slice(0, -1) + "qu" + ending;
+    if (stem.endsWith("z")) return stem.slice(0, -1) + "c" + ending;
+  }
+  return stem + ending;
+}
+
+function regularImperative(inf, pres) {
+  let type;
+  let infStem;
+  if (inf.endsWith("ar")) {
+    type = "ar";
+    infStem = inf.slice(0, -2);
+  } else if (inf.endsWith("er")) {
+    type = "er";
+    infStem = inf.slice(0, -2);
+  } else if (inf.endsWith("ir")) {
+    type = "ir";
+    infStem = inf.slice(0, -2);
+  } else return null;
+  const tu = pres.el;
+  const cmdStem = tu.replace(/[áéíóúaeiou]$/i, "");
+  if (type === "ar") {
+    return {
+      tu,
+      ud: spellingArCommand(cmdStem, "e"),
+      vos: infStem + "ad",
+      uds: spellingArCommand(cmdStem, "en")
+    };
+  }
+  return {
+    tu,
+    ud: cmdStem + "a",
+    vos: infStem + (type === "ir" ? "id" : "ed"),
+    uds: cmdStem + "an"
+  };
+}
+
+function attachReflImp(forms, isRefl, base) {
+  if (!forms || !isRefl) return forms;
+  return {
+    tu: forms.tu + "te",
+    ud: forms.ud + "se",
+    vos: base === "ir" ? "idos" : forms.vos.replace(/d$/i, "") + "os",
+    uds: forms.uds + "se"
+  };
+}
+
+function imperativeOf(infinitive) {
+  const { base, isRefl } = splitReflexive(infinitive);
+  if (SKIP_IMP.has(base) || SKIP_IMP.has(infinitive)) return null;
+  if (IRREG_IMP[infinitive]) return IRREG_IMP[infinitive];
+  if (IRREG_IMP[base]) return attachReflImp(IRREG_IMP[base], isRefl, base);
+  const pres = IRREG_PRES[base] || regularPresent(base);
+  if (!pres) return null;
+  return attachReflImp(regularImperative(base, pres), isRefl, base);
+}
+
 const REFLX = ["me", "te", "se", "nos", "os", "se"];
 const PERS = ["yo", "tú", "él/ella/usted", "nosotros", "vosotros", "ellos/ustedes"];
 const KEYS = ["yo", "tu", "el", "nos", "vos", "ellos"];
@@ -208,27 +304,77 @@ const IT_ISC = ["capire", "finire", "preferire", "pulire", "costruire", "spedire
 const IT_PERS = ["io", "tu", "lui/lei", "noi", "voi", "loro"];
 const IT_KEYS = ["io", "tu", "lui", "noi", "voi", "loro"];
 
+const IT_IRREG_IMP = {
+  essere: { tu: "sii", lei: "sia", voi: "siate" },
+  avere: { tu: "abbi", lei: "abbia", voi: "abbiate" },
+  andare: { tu: "va'", lei: "vada", voi: "andate" },
+  fare: { tu: "fa'", lei: "faccia", voi: "fate" },
+  dire: { tu: "di'", lei: "dica", voi: "dite" },
+  stare: { tu: "sta'", lei: "stia", voi: "state" },
+  dare: { tu: "da'", lei: "dia", voi: "date" },
+  venire: { tu: "vieni", lei: "venga", voi: "venite" },
+  uscire: { tu: "esci", lei: "esca", voi: "uscite" },
+  bere: { tu: "bevi", lei: "beva", voi: "bevete" },
+  sapere: { tu: "sappi", lei: "sappia", voi: "sappiate" },
+  volere: { tu: "vogli", lei: "voglia", voi: "vogliate" },
+  rimanere: { tu: "rimani", lei: "rimanga", voi: "rimanete" },
+  tenere: { tu: "tieni", lei: "tenga", voi: "tenete" },
+  salire: { tu: "sali", lei: "salga", voi: "salite" },
+  scegliere: { tu: "scegli", lei: "scelga", voi: "scegliete" },
+  tradurre: { tu: "traduci", lei: "traduca", voi: "traducete" }
+};
+
+const IT_SKIP_IMP = new Set(["piacere", "potere", "dovere", "c'è", "ci"]);
+
+function italianImperative(inf) {
+  const raw = String(inf || "").split(" / ")[0].replace(/^l'/, "").trim();
+  if (!raw || IT_SKIP_IMP.has(raw)) return null;
+  if (IT_IRREG_IMP[raw]) return IT_IRREG_IMP[raw];
+  const pres = italianPresent(raw);
+  if (!pres) return null;
+  if (raw.endsWith("are")) {
+    return { tu: pres.lui, lei: pres.tu, voi: pres.voi };
+  }
+  if (raw.endsWith("ere") || raw.endsWith("ire")) {
+    const leiStem = pres.tu.replace(/i$/i, "");
+    return { tu: pres.tu, lei: leiStem + "a", voi: pres.voi };
+  }
+  return null;
+}
+
+function italianJoin(stem, ending, type) {
+  let s = stem;
+  if (type === "are" && /[cg]$/i.test(s) && /^[ei]/i.test(ending)) s += "h";
+  if (ending.startsWith("i") && /i$/i.test(s)) return s + ending.slice(1);
+  return s + ending;
+}
+
 function italianPresent(inf) {
   const raw = String(inf || "").replace(/^l'/, "");
   if (IT_IRREG[raw]) return IT_IRREG[raw];
   let stem;
   let set;
+  let type;
   if (IT_ISC.includes(raw) && raw.endsWith("ire")) {
     stem = raw.slice(0, -3);
     set = ["isco", "isci", "isce", "iamo", "ite", "iscono"];
+    type = "isc";
   } else if (raw.endsWith("are")) {
     stem = raw.slice(0, -3);
     set = ["o", "i", "a", "iamo", "ate", "ano"];
+    type = "are";
   } else if (raw.endsWith("ere")) {
     stem = raw.slice(0, -3);
     set = ["o", "i", "e", "iamo", "ete", "ono"];
+    type = "ere";
   } else if (raw.endsWith("ire")) {
     stem = raw.slice(0, -3);
     set = ["o", "i", "e", "iamo", "ite", "ono"];
+    type = "ire";
   } else return null;
   const out = {};
   IT_KEYS.forEach((k, i) => {
-    out[k] = stem + set[i];
+    out[k] = italianJoin(stem, set[i], type);
   });
   return out;
 }
@@ -242,9 +388,22 @@ function getWordForms(item) {
     if (!forms) return null;
     const rows = PERS.map((label, i) => [label, inf === "haber" && item.es === "hay" && i === 2 ? "hay" : forms[KEYS[i]]]);
     if (item.es === "hay") {
-      return { title: "hay / haber · Präsens", rows: [["es gibt", "hay"], ...rows] };
+      return { title: "hay / haber", rows, sections: [{ title: "Präsens", rows: [["es gibt", "hay"], ...rows] }] };
     }
-    return { title: inf + " · Präsens", rows };
+    const imp = imperativeOf(inf);
+    const sections = [{ title: "Präsens", rows }];
+    if (imp) {
+      sections.push({
+        title: "Imperativ (bejaht)",
+        rows: [
+          ["tú", imp.tu],
+          ["usted", imp.ud],
+          ["vosotros", imp.vos],
+          ["ustedes", imp.uds]
+        ]
+      });
+    }
+    return { title: inf, rows, sections };
   }
   if (item.pos === "n") {
     const sg = withArticle(item);
@@ -280,7 +439,20 @@ function getItalianForms(item) {
     }
     const forms = italianPresent(inf);
     if (!forms) return null;
-    return { title: inf + " · Presente", rows: IT_PERS.map((label, i) => [label, forms[IT_KEYS[i]]]) };
+    const rows = IT_PERS.map((label, i) => [label, forms[IT_KEYS[i]]]);
+    const sections = [{ title: "Presente", rows }];
+    const imp = italianImperative(inf);
+    if (imp) {
+      sections.push({
+        title: "Imperativ (bejaht)",
+        rows: [
+          ["tu", imp.tu],
+          ["Lei", imp.lei],
+          ["voi", imp.voi]
+        ]
+      });
+    }
+    return { title: inf, rows, sections };
   }
   if (item.pos === "n") return italianArticleRows(item);
   if (item.pos === "adj") {
